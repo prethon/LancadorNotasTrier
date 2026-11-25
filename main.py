@@ -105,7 +105,7 @@ def etapa_lancar_erp(
             # 1. Reação ✅ no WhatsApp apenas para notas lançadas
             if status == "lancado" and zap_monitor:
                 try:
-                    zap_monitor.reagir_mensagem_nota_lancada(numero_nota)
+                    zap_monitor.reagir_mensagem_nota_lancada(numero_nota, origem_contato=origem)
                 except Exception as e:
                     print(f"[WhatsApp] Aviso ao reagir com emoji: {e}")
 
