@@ -56,8 +56,8 @@ class App(tk.Tk):
         init_db()
 
         self.title("Lançador de Notas Fiscais - Painel de Controle")
-        self.geometry("1100x780")
-        self.minsize(960, 620)
+        self.geometry("1100x650")
+        self.minsize(960, 480)
 
         # Variáveis de controle
         self.thread_execucao = None
@@ -134,14 +134,14 @@ class App(tk.Tk):
         self.lbl_versao.pack(side=tk.RIGHT, padx=(0, 10))
 
         # 2. Configurações da Central ERP & Acesso & Alertas WhatsApp
-        frame_erp = ttk.LabelFrame(self, text=" ⚙️ Central ERP, Acesso & Notificações ", padding=10)
-        frame_erp.pack(fill=tk.X, padx=15, pady=(0, 6))
+        frame_erp = ttk.LabelFrame(self, text=" ⚙️ Central ERP, Acesso & Notificações ", padding=6)
+        frame_erp.pack(fill=tk.X, padx=15, pady=(0, 4))
 
         # Linha 1: Link do ERP
         frame_url = ttk.Frame(frame_erp)
-        frame_url.pack(fill=tk.X, pady=(0, 6))
+        frame_url.pack(fill=tk.X, pady=(0, 4))
         ttk.Label(frame_url, text="Link do ERP:", width=15).pack(side=tk.LEFT)
-        ent_url = ttk.Entry(frame_url, textvariable=self.var_erp_url, font=("Menlo", 10))
+        ent_url = ttk.Entry(frame_url, textvariable=self.var_erp_url, font=("Menlo", 9))
         ent_url.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         # Linha 2: Usuário, Senha e WhatsApp de Alertas
@@ -149,11 +149,11 @@ class App(tk.Tk):
         frame_cred.pack(fill=tk.X)
 
         ttk.Label(frame_cred, text="Usuário ERP:", width=15).pack(side=tk.LEFT)
-        ent_user = ttk.Entry(frame_cred, textvariable=self.var_erp_usuario, width=12)
-        ent_user.pack(side=tk.LEFT, padx=(0, 10))
+        ent_user = ttk.Entry(frame_cred, textvariable=self.var_erp_usuario, width=10)
+        ent_user.pack(side=tk.LEFT, padx=(0, 8))
 
         ttk.Label(frame_cred, text="Senha:").pack(side=tk.LEFT, padx=(0, 4))
-        self.ent_pass = ttk.Entry(frame_cred, textvariable=self.var_erp_senha, width=12, show="*")
+        self.ent_pass = ttk.Entry(frame_cred, textvariable=self.var_erp_senha, width=10, show="*")
         self.ent_pass.pack(side=tk.LEFT, padx=(0, 4))
 
         self.btn_ver_senha = ttk.Button(
@@ -162,172 +162,149 @@ class App(tk.Tk):
             width=3,
             command=self._alternar_visibilidade_senha
         )
-        self.btn_ver_senha.pack(side=tk.LEFT, padx=(0, 15))
+        self.btn_ver_senha.pack(side=tk.LEFT, padx=(0, 12))
 
-        ttk.Label(frame_cred, text="📱 WhatsApp para Alertas:").pack(side=tk.LEFT, padx=(0, 4))
-        ent_zap_alerta = ttk.Entry(frame_cred, textvariable=self.var_whatsapp_alerta, width=18, font=("Menlo", 9))
+        ttk.Label(frame_cred, text="📱 WhatsApp p/ Alertas:").pack(side=tk.LEFT, padx=(0, 4))
+        ent_zap_alerta = ttk.Entry(frame_cred, textvariable=self.var_whatsapp_alerta, width=16, font=("Menlo", 9))
         ent_zap_alerta.pack(side=tk.LEFT, padx=(0, 8))
         ttk.Label(frame_cred, text="(Ex: 5511999998888 ou Nome Contato)", font=("Arial", 8, "italic"), foreground="#666").pack(side=tk.LEFT)
 
-        # 3. Teste Manual de Lançamento
-        frame_teste = ttk.LabelFrame(self, text=" 🧪 Teste Individual de Lançamento (Validação sem WhatsApp) ", padding=10)
-        frame_teste.pack(fill=tk.X, padx=15, pady=(0, 6))
-
-        ttk.Label(frame_teste, text="Número da Nota:").pack(side=tk.LEFT, padx=(0, 6))
-        ent_nota_teste = ttk.Entry(frame_teste, textvariable=self.var_nota_teste, width=18, font=("Menlo", 10))
-        ent_nota_teste.pack(side=tk.LEFT, padx=(0, 10))
-
-        self.btn_testar_nota = tk.Button(
-            frame_teste,
-            text="🧪 Testar Lançamento Desta Nota",
-            bg="#007bff",
-            fg="white",
-            font=("Arial", 10, "bold"),
-            padx=10,
-            pady=3,
-            command=self._executar_teste_nota_manual,
-        )
-        self.btn_testar_nota.pack(side=tk.LEFT, padx=(0, 15))
-
-        ttk.Label(
-            frame_teste,
-            text="(Lança a nota digitada no ERP, valida boletos e exibe na tela para conferência)",
-            font=("Arial", 8, "italic"),
-            foreground="#555"
-        ).pack(side=tk.LEFT)
-
-        # 4. Controles de Execução Geral
-        frame_controles = ttk.LabelFrame(self, text=" Controles de Execução Geral ", padding=10)
-        frame_controles.pack(fill=tk.X, padx=15, pady=6)
+        # 3. Controles de Execução Geral & Teste de Nota
+        frame_controles = ttk.LabelFrame(self, text=" Controles de Execução & Teste ", padding=6)
+        frame_controles.pack(fill=tk.X, padx=15, pady=(0, 4))
 
         frame_botoes = ttk.Frame(frame_controles)
-        frame_botoes.pack(fill=tk.X, pady=(0, 8))
+        frame_botoes.pack(fill=tk.X, pady=(0, 4))
 
         self.btn_iniciar = tk.Button(
             frame_botoes,
-            text="▶ Iniciar Automação Contínua",
+            text="▶ Iniciar Contínuo",
             bg="#28a745",
             fg="white",
-            font=("Arial", 11, "bold"),
-            padx=10,
-            pady=4,
+            font=("Arial", 10, "bold"),
+            padx=8,
+            pady=3,
             command=self._iniciar_continuo,
         )
-        self.btn_iniciar.pack(side=tk.LEFT, padx=(0, 8))
+        self.btn_iniciar.pack(side=tk.LEFT, padx=(0, 6))
 
         self.btn_parar = tk.Button(
             frame_botoes,
             text="⏹ Parar",
             bg="#dc3545",
             fg="white",
-            font=("Arial", 11, "bold"),
-            padx=10,
-            pady=4,
+            font=("Arial", 10, "bold"),
+            padx=8,
+            pady=3,
             state=tk.DISABLED,
             command=self._parar,
         )
-        self.btn_parar.pack(side=tk.LEFT, padx=(0, 12))
+        self.btn_parar.pack(side=tk.LEFT, padx=(0, 8))
 
         self.btn_ciclo_unico = ttk.Button(
             frame_botoes,
             text="Ciclo Único",
             command=self._executar_ciclo_unico
         )
-        self.btn_ciclo_unico.pack(side=tk.LEFT, padx=(0, 6))
+        self.btn_ciclo_unico.pack(side=tk.LEFT, padx=(0, 4))
 
         self.btn_apenas_zap = ttk.Button(
             frame_botoes,
             text="Apenas WhatsApp",
             command=self._executar_apenas_zap
         )
-        self.btn_apenas_zap.pack(side=tk.LEFT, padx=(0, 6))
+        self.btn_apenas_zap.pack(side=tk.LEFT, padx=(0, 4))
 
         self.btn_apenas_erp = ttk.Button(
             frame_botoes,
             text="Apenas Lançar ERP",
             command=self._executar_apenas_erp
         )
-        self.btn_apenas_erp.pack(side=tk.LEFT, padx=(0, 15))
+        self.btn_apenas_erp.pack(side=tk.LEFT, padx=(0, 10))
 
         btn_zerar = ttk.Button(
             frame_botoes,
-            text="🔄 Zerar Checkpoint Whats",
+            text="🔄 Zerar Checkpoint",
             command=self._zerar_checkpoint,
         )
         btn_zerar.pack(side=tk.RIGHT)
 
+        # Linha 2 de Controles: Opções + Teste Individual de Nota integrado
         frame_opcoes = ttk.Frame(frame_controles)
         frame_opcoes.pack(fill=tk.X)
 
         chk_teste = ttk.Checkbutton(
             frame_opcoes,
-            text="Modo Teste Seguro (Navegador Visível)",
+            text="Modo Teste (Navegador Visível)",
             variable=self.var_modo_teste
         )
-        chk_teste.pack(side=tk.LEFT, padx=(0, 20))
+        chk_teste.pack(side=tk.LEFT, padx=(0, 12))
 
-        ttk.Label(frame_opcoes, text="Limite por ciclo:").pack(side=tk.LEFT, padx=(0, 4))
-        spn_limite = ttk.Spinbox(frame_opcoes, from_=1, to=100, width=5, textvariable=self.var_limite_notas)
-        spn_limite.pack(side=tk.LEFT, padx=(0, 20))
+        ttk.Label(frame_opcoes, text="Limite:").pack(side=tk.LEFT, padx=(0, 2))
+        spn_limite = ttk.Spinbox(frame_opcoes, from_=1, to=100, width=4, textvariable=self.var_limite_notas)
+        spn_limite.pack(side=tk.LEFT, padx=(0, 12))
 
-        ttk.Label(frame_opcoes, text="Intervalo (s):").pack(side=tk.LEFT, padx=(0, 4))
-        spn_intervalo = ttk.Spinbox(frame_opcoes, from_=5, to=300, width=5, textvariable=self.var_intervalo)
-        spn_intervalo.pack(side=tk.LEFT)
+        ttk.Label(frame_opcoes, text="Intervalo (s):").pack(side=tk.LEFT, padx=(0, 2))
+        spn_intervalo = ttk.Spinbox(frame_opcoes, from_=5, to=300, width=4, textvariable=self.var_intervalo)
+        spn_intervalo.pack(side=tk.LEFT, padx=(0, 15))
 
-        # 5. Painel de Métricas e Relatórios (2 Linhas)
-        frame_metricas = ttk.LabelFrame(self, text=" Métricas em Tempo Real & Relatórios ", padding=10)
-        frame_metricas.pack(fill=tk.X, padx=15, pady=6)
+        # Divisor e Campo de Teste Integrado
+        ttk.Separator(frame_opcoes, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
 
-        # Linha 1 de métricas: Lançamento no ERP
-        lbl_sec_erp = tk.Label(frame_metricas, text="[ Status de Lançamento no ERP ]", font=("Arial", 9, "bold"), fg="#333")
-        lbl_sec_erp.pack(anchor=tk.W, pady=(0, 4))
+        ttk.Label(frame_opcoes, text="🧪 Testar NF:").pack(side=tk.LEFT, padx=(0, 4))
+        ent_nota_teste = ttk.Entry(frame_opcoes, textvariable=self.var_nota_teste, width=12, font=("Menlo", 9))
+        ent_nota_teste.pack(side=tk.LEFT, padx=(0, 6))
 
-        frame_cards_erp = ttk.Frame(frame_metricas)
-        frame_cards_erp.pack(fill=tk.X, pady=(0, 8))
-
-        self.card_pendentes = self._criar_card(frame_cards_erp, "Pendentes", "0", "#007bff")
-        self.card_lancadas = self._criar_card(frame_cards_erp, "Lançadas no ERP", "0", "#28a745", arquivo_relatorio="notas_lancadas.csv")
-        self.card_duplicadas = self._criar_card(frame_cards_erp, "Duplicidades no ERP", "0", "#fd7e14", arquivo_relatorio="duplicidades.csv")
-        self.card_sem_cadastro = self._criar_card(frame_cards_erp, "Produtos s/ Cadastro", "0", "#6f42c1", arquivo_relatorio="produtos_sem_cadastro.csv")
-        self.card_erros = self._criar_card(frame_cards_erp, "Outros Erros", "0", "#dc3545", arquivo_relatorio="outros_erros.csv")
-
-        # Linha 2 de métricas: Auditoria Financeira
-        lbl_sec_fin = tk.Label(frame_metricas, text="[ Auditoria Financeira dos Boletos ]", font=("Arial", 9, "bold"), fg="#333")
-        lbl_sec_fin.pack(anchor=tk.W, pady=(4, 4))
-
-        frame_cards_fin = ttk.Frame(frame_metricas)
-        frame_cards_fin.pack(fill=tk.X, pady=(0, 6))
-
-        self.card_sem_boleto = self._criar_card(
-            frame_cards_fin,
-            "⚠️ Notas Sem Boletos",
-            "0",
-            "#d39e00",
-            arquivo_relatorio="notas_sem_boleto.csv"
+        self.btn_testar_nota = tk.Button(
+            frame_opcoes,
+            text="🧪 Testar",
+            bg="#007bff",
+            fg="white",
+            font=("Arial", 9, "bold"),
+            padx=6,
+            pady=1,
+            command=self._executar_teste_nota_manual,
         )
-        self.card_boletos_div = self._criar_card(
-            frame_cards_fin,
-            "💰 Boletos Divergentes (> R$ 7)",
-            "0",
-            "#c82333",
-            arquivo_relatorio="boletos_divergentes.csv"
-        )
+        self.btn_testar_nota.pack(side=tk.LEFT)
+
+        # 4. Painel de Métricas e Relatórios (Linha Única com 7 Cartões)
+        frame_metricas = ttk.LabelFrame(self, text=" Métricas em Tempo Real & Relatórios ", padding=6)
+        frame_metricas.pack(fill=tk.X, padx=15, pady=(0, 4))
+
+        frame_cards = ttk.Frame(frame_metricas)
+        frame_cards.pack(fill=tk.X, pady=(0, 4))
+
+        self.card_pendentes = self._criar_card(frame_cards, "Pendentes", "0", "#007bff")
+        self.card_lancadas = self._criar_card(frame_cards, "Lançadas", "0", "#28a745", arquivo_relatorio="notas_lancadas.csv")
+        self.card_duplicadas = self._criar_card(frame_cards, "Duplicadas", "0", "#fd7e14", arquivo_relatorio="duplicidades.csv")
+        self.card_sem_cadastro = self._criar_card(frame_cards, "s/ Cadastro", "0", "#6f42c1", arquivo_relatorio="produtos_sem_cadastro.csv")
+        self.card_erros = self._criar_card(frame_cards, "Outros Erros", "0", "#dc3545", arquivo_relatorio="outros_erros.csv")
+        self.card_sem_boleto = self._criar_card(frame_cards, "⚠️ s/ Boletos", "0", "#d39e00", arquivo_relatorio="notas_sem_boleto.csv")
+        self.card_boletos_div = self._criar_card(frame_cards, "💰 Boletos Div (>R$7)", "0", "#c82333", arquivo_relatorio="boletos_divergentes.csv")
 
         # Botão de Limpeza Segura de Inconsistências
         frame_acoes_limpeza = ttk.Frame(frame_metricas)
-        frame_acoes_limpeza.pack(fill=tk.X, pady=(6, 0))
+        frame_acoes_limpeza.pack(fill=tk.X, pady=(2, 0))
 
         btn_limpar_inconsistencias = tk.Button(
             frame_acoes_limpeza,
-            text="🧹 Limpar Relatórios de Inconsistências (Preserva Lançadas e Pendentes)",
+            text="🧹 Limpar Relatórios de Inconsistências",
             bg="#f8f9fa",
             fg="#dc3545",
-            font=("Arial", 9, "bold"),
+            font=("Arial", 8, "bold"),
             relief=tk.GROOVE,
-            padx=10,
-            pady=3,
+            padx=8,
+            pady=2,
             command=self._limpar_inconsistencias,
         )
+        btn_limpar_inconsistencias.pack(side=tk.RIGHT)
+
+        ttk.Label(
+            frame_acoes_limpeza,
+            text="* Preserva notas lançadas e pendentes mesmo com automação rodando.",
+            font=("Arial", 8, "italic"),
+            foreground="#666"
+        ).pack(side=tk.LEFT)
         btn_limpar_inconsistencias.pack(side=tk.RIGHT)
 
         ttk.Label(
@@ -462,21 +439,21 @@ class App(tk.Tk):
             self.mostrar_senha = True
 
     def _criar_card(self, pai, titulo, valor_inicial, cor_destaque, arquivo_relatorio=None):
-        frame = tk.Frame(pai, relief=tk.GROOVE, bd=1, padx=10, pady=8, bg="#f8f9fa")
-        frame.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, padx=4)
+        frame = tk.Frame(pai, relief=tk.GROOVE, bd=1, padx=4, pady=3, bg="#f8f9fa")
+        frame.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, padx=2)
 
-        lbl_tit = tk.Label(frame, text=titulo, font=("Arial", 9, "bold"), fg="#495057", bg="#f8f9fa")
+        lbl_tit = tk.Label(frame, text=titulo, font=("Arial", 8, "bold"), fg="#495057", bg="#f8f9fa")
         lbl_tit.pack()
 
-        lbl_val = tk.Label(frame, text=valor_inicial, font=("Arial", 18, "bold"), fg=cor_destaque, bg="#f8f9fa")
-        lbl_val.pack(pady=(2, 2))
+        lbl_val = tk.Label(frame, text=valor_inicial, font=("Arial", 15, "bold"), fg=cor_destaque, bg="#f8f9fa")
+        lbl_val.pack(pady=(1, 1))
 
         if arquivo_relatorio:
             btn_ver = tk.Button(
                 frame,
                 text="Abrir CSV",
-                font=("Arial", 8),
-                padx=4,
+                font=("Arial", 7),
+                padx=3,
                 pady=1,
                 command=lambda: self._abrir_arquivo_relatorio(arquivo_relatorio)
             )
