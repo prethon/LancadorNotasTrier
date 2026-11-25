@@ -36,4 +36,4 @@ ERP_USUARIO = os.getenv("ERP_USUARIO", "").strip()
 ERP_SENHA = os.getenv("ERP_SENHA", "").strip()
 
 # Configurações de Atualização Automática (GitHub)
-GITHUB_REPO = os.getenv("GITHUB_REPO", "seu_usuario/LancadorNotas").strip()
+GITHUB_REPO = os.getenv("GITHUB_REPO", "prethon/LancadorNotasTrier").strip()

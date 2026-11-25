@@ -73,10 +73,10 @@ def verificar_atualizacao(repositorio: Optional[str] = None) -> Dict[str, Any]:
     versao_local_info = obter_versao_local()
     versao_local = versao_local_info.get("versao", "1.0.0")
 
-    if not repo or repo == "seu_usuario/LancadorNotas":
+    if not repo:
         return {
             "disponivel": False,
-            "motivo": "Repositorio GitHub ainda nao configurado.",
+            "motivo": "Repositório GitHub não configurado.",
             "versao_atual": versao_local,
         }
 
