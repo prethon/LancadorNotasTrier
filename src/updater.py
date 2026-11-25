@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import re
+import ssl
 import shutil
 import zipfile
 import tempfile
@@ -44,6 +45,25 @@ def _normalizar_versao(versao_str: str) -> tuple:
     return tuple(map(int, numeros)) if numeros else (0, 0, 0)
 
 
+def _abrir_url_com_fallback_ssl(req: urllib.request.Request, timeout: int = 15):
+    """
+    Abre URL via urllib com fallback automático para contexto sem verificação
+    caso o sistema operacional (especialmente macOS) não tenha os certificados locais instalados.
+    """
+    try:
+        ctx = ssl.create_default_context()
+        return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+    except urllib.error.URLError as e:
+        msg_erro = str(e).lower()
+        if "certificate_verify_failed" in msg_erro or "certificate verify failed" in msg_erro or "ssl" in msg_erro:
+            ctx_bypass = ssl._create_unverified_context()
+            return urllib.request.urlopen(req, timeout=timeout, context=ctx_bypass)
+        raise e
+    except Exception:
+        ctx_bypass = ssl._create_unverified_context()
+        return urllib.request.urlopen(req, timeout=timeout, context=ctx_bypass)
+
+
 def verificar_atualizacao(repositorio: Optional[str] = None) -> Dict[str, Any]:
     """
     Consulta o GitHub para verificar se existe uma versão mais recente disponível.
@@ -68,7 +88,7 @@ def verificar_atualizacao(repositorio: Optional[str] = None) -> Dict[str, Any]:
             url_raw_version,
             headers={"User-Agent": "LancadorNotas-AutoUpdater/1.0"},
         )
-        with urllib.request.urlopen(req, timeout=10) as resposta:
+        with _abrir_url_com_fallback_ssl(req, timeout=10) as resposta:
             if resposta.status == 200:
                 dados_remotos = json.loads(resposta.read().decode("utf-8"))
                 versao_remota = dados_remotos.get("versao", "1.0.0")
@@ -147,7 +167,7 @@ def baixar_e_aplicar_atualizacao(
             url_zip,
             headers={"User-Agent": "LancadorNotas-AutoUpdater/1.0"},
         )
-        with urllib.request.urlopen(req, timeout=60) as resp, open(caminho_zip, "wb") as f_out:
+        with _abrir_url_com_fallback_ssl(req, timeout=60) as resp, open(caminho_zip, "wb") as f_out:
             shutil.copyfileobj(resp, f_out)
 
         log("Extraindo arquivos da atualização...")
