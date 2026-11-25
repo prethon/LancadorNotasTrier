@@ -73,23 +73,24 @@ def etapa_lancar_erp(
     senha: str = None,
     zap_monitor: WhatsAppMonitor = None,
     numero_alerta: str = None,
-) -> int:
+) -> Tuple[int, List[Dict[str, Any]]]:
     """
     Executa o lançamento no ERP para notas 'pendente'.
-    Se zap_monitor estiver ativo:
-      - Reage com ✅ nas notas lançadas com sucesso.
-      - Dispara alerta no WhatsApp se houver produto sem cadastro ou divergência financeira.
+    Executa de forma isolada do WhatsApp para garantir estabilidade do Playwright.
+    Retorna a quantidade de notas processadas e a lista de resultados.
     """
     print("\n>>> ETAPA 2: Lançamento de Notas no ERP Web")
     notas_pendentes = obter_notas_pendentes(limite=limite)
 
     if not notas_pendentes:
         print("[ERP] Nenhuma nota pendente de lançamento na fila.")
-        return 0
+        return 0, []
 
     print(f"[ERP] {len(notas_pendentes)} nota(s) pendente(s) selecionada(s) para lançamento.")
 
     total_processadas = 0
+    resultados: List[Dict[str, Any]] = []
+
     with ERPLancador(url=url, usuario=usuario, senha=senha) as erp:
         erp.login_e_navegar_para_entrada()
 
@@ -99,50 +100,83 @@ def etapa_lancar_erp(
             origem = nota["origem_contato"]
 
             resultado = erp.lancar_nota(id_unico, numero_nota, origem)
-            status = resultado.get("status", "")
+            resultado["origem"] = origem
+            resultados.append(resultado)
             total_processadas += 1
-
-            # 1. Reação ✅ no WhatsApp apenas para notas lançadas
-            if status == "lancado" and zap_monitor:
-                try:
-                    zap_monitor.reagir_mensagem_nota_lancada(numero_nota, origem_contato=origem)
-                except Exception as e:
-                    print(f"[WhatsApp] Aviso ao reagir com emoji: {e}")
-
-            # 2. Alerta imediato no WhatsApp se configurado
-            if numero_alerta and zap_monitor:
-                try:
-                    if status == "produto_sem_cadastro":
-                        msg_alerta = (
-                            f"⚠️ *Alerta Lançador de Notas*\n"
-                            f"A *NF {numero_nota}* possui produtos pendentes de cadastro no ERP e não pôde ser importada!\n"
-                            f"Origem: {origem}"
-                        )
-                        zap_monitor.enviar_alerta(numero_alerta, msg_alerta)
-
-                    fin = resultado.get("financeiro", {})
-                    if fin.get("divergencia"):
-                        dif = fin.get("diferenca", 0.0)
-                        msg_alerta = (
-                            f"💰 *Alerta de Boleto Divergente*\n"
-                            f"A *NF {numero_nota}* foi lançada, mas o boleto é R$ {dif:.2f} maior que a nota (acima da tolerância de R$ 7,00)!\n"
-                            f"Origem: {origem}"
-                        )
-                        zap_monitor.enviar_alerta(numero_alerta, msg_alerta)
-                except Exception as e:
-                    print(f"[WhatsApp] Aviso ao enviar mensagem de alerta: {e}")
 
             if MODO_TESTE:
                 time.sleep(2)
 
-    return total_processadas
+    return total_processadas, resultados
 
 
-def ciclo_completo(limite_lancamento: int = None, url: str = None, usuario: str = None, senha: str = None) -> None:
-    """Executa o ciclo padrão: Captura WhatsApp -> Lançamento ERP -> Estatísticas -> Backup."""
+def etapa_confirmar_whatsapp(resultados: List[Dict[str, Any]], numero_alerta: str = None) -> None:
+    """
+    Abre o WhatsApp de forma sequencial e isolada para:
+    1. Reagir com ✅ nas notas lançadas com sucesso.
+    2. Enviar alertas caso haja produtos sem cadastro ou boletos divergentes.
+    Nunca roda simultaneamente com o ERP para evitar conflitos de Playwright.
+    """
+    notas_sucesso = [r for r in resultados if r.get("status") == "lancado"]
+    alertas_pendentes: List[str] = []
+
+    if numero_alerta:
+        for r in resultados:
+            st = r.get("status")
+            num = r.get("numero_nota")
+            origem = r.get("origem", "")
+
+            if st == "produto_sem_cadastro":
+                alertas_pendentes.append(
+                    f"⚠️ *Alerta Lançador de Notas*\n"
+                    f"A *NF {num}* possui produtos pendentes de cadastro no ERP e não pôde ser importada!\n"
+                    f"Origem: {origem}"
+                )
+            elif st == "nota_inexistente":
+                alertas_pendentes.append(
+                    f"🔎 *Alerta Nota Inexistente*\n"
+                    f"A *NF {num}* não existe no ERP (não apareceu no filtro ao digitar)!\n"
+                    f"Origem: {origem}"
+                )
+
+            fin = r.get("financeiro", {})
+            if fin.get("divergencia"):
+                dif = fin.get("diferenca", 0.0)
+                alertas_pendentes.append(
+                    f"💰 *Alerta de Boleto Divergente*\n"
+                    f"A *NF {num}* foi lançada, mas o boleto é R$ {dif:.2f} maior que a nota (acima da tolerância de R$ 7,00)!\n"
+                    f"Origem: {origem}"
+                )
+
+    if not notas_sucesso and not alertas_pendentes:
+        return
+
+    print("\n>>> ETAPA 3: Confirmações e Alertas no WhatsApp Web")
+    with WhatsAppMonitor() as zap:
+        if zap.abrir_e_garantir_login():
+            for r in notas_sucesso:
+                try:
+                    num = r.get("numero_nota")
+                    origem = r.get("origem")
+                    zap.reagir_mensagem_nota_lancada(num, origem_contato=origem)
+                except Exception as e:
+                    print(f"[WhatsApp] Aviso ao reagir com emoji: {e}")
+
+            for msg in alertas_pendentes:
+                try:
+                    zap.enviar_alerta(numero_alerta, msg)
+                except Exception as e:
+                    print(f"[WhatsApp] Aviso ao enviar mensagem de alerta: {e}")
+
+
+def ciclo_completo(limite_lancamento: int = None, url: str = None, usuario: str = None, senha: str = None, numero_alerta: str = None) -> None:
+    """Executa o ciclo padrão: Captura WhatsApp -> Lançamento ERP -> Reações WhatsApp -> Estatísticas -> Backup."""
     etapa_capturar_whatsapp()
-    etapa_lancar_erp(limite=limite_lancamento, url=url, usuario=usuario, senha=senha)
+    total_proc, resultados = etapa_lancar_erp(limite=limite_lancamento, url=url, usuario=usuario, senha=senha)
+    if resultados:
+        etapa_confirmar_whatsapp(resultados, numero_alerta=numero_alerta)
     exibir_estatisticas()
+    executar_backup()
     executar_backup()
 
 

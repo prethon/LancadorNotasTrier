@@ -27,6 +27,14 @@ def extrair_numeros_notas(texto: str) -> List[str]:
         if not item:
             continue
 
+        # Ignora linhas que são horários típicos do WhatsApp (ex: "14:35", "09:12", "14:35 ✓")
+        if re.match(r"^\s*\d{1,2}:\d{2}(:\d{2})?(\s*(am|pm|[✓✔\s]))*$", item, re.IGNORECASE):
+            continue
+
+        # Ignora linhas que são puramente datas (ex: "25/11/2026", "25/11/26")
+        if re.match(r"^\s*\d{1,2}/\d{1,2}/\d{2,4}\s*$", item):
+            continue
+
         # Mantém apenas os dígitos da nota (removendo pontos, traços ou espaços acidentais)
         apenas_digitos = re.sub(r"\D", "", item)
 

@@ -47,6 +47,16 @@ def registrar_produto_sem_cadastro(numero_nota: str, origem_contato: str, detalh
     )
 
 
+def registrar_nota_inexistente(numero_nota: str, origem_contato: str, detalhes: str = "Nota não existe no ERP") -> None:
+    """Registra uma nota que não existe no ERP em reports/notas_inexistentes.csv."""
+    arquivo = REPORTS_DIR / "notas_inexistentes.csv"
+    _adicionar_ao_relatorio(
+        arquivo,
+        CABECALHO_PADRAO,
+        [datetime.now().strftime("%d/%m/%Y %H:%M:%S"), numero_nota, origem_contato, detalhes]
+    )
+
+
 def registrar_outro_erro(numero_nota: str, origem_contato: str, detalhes: str) -> None:
     """Registra uma falha técnica ou imprevisto em reports/outros_erros.csv."""
     arquivo = REPORTS_DIR / "outros_erros.csv"

@@ -14,6 +14,7 @@ from .reporter import (
     registrar_nota_lancada,
     registrar_duplicidade,
     registrar_produto_sem_cadastro,
+    registrar_nota_inexistente,
     registrar_outro_erro,
     registrar_nota_sem_boleto,
     registrar_boleto_divergente,
@@ -27,6 +28,7 @@ class ERPLancador:
         url: Optional[str] = None,
         usuario: Optional[str] = None,
         senha: Optional[str] = None,
+        playwright_instance=None,
     ):
         if headless is None:
             self.headless = not MODO_TESTE
@@ -37,7 +39,8 @@ class ERPLancador:
         self.usuario = (usuario or ERP_USUARIO).strip()
         self.senha = (senha or ERP_SENHA).strip()
 
-        self._playwright = None
+        self._external_playwright = playwright_instance is not None
+        self._playwright = playwright_instance
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
         self.dialog_mensagem: Optional[str] = None
@@ -51,7 +54,9 @@ class ERPLancador:
 
     def iniciar(self) -> None:
         """Inicializa o navegador com perfil persistente para o ERP."""
-        self._playwright = sync_playwright().start()
+        if not self._playwright:
+            self._playwright = sync_playwright().start()
+
         args = [
             "--disable-blink-features=AutomationControlled",
             "--no-default-browser-check",
@@ -82,18 +87,61 @@ class ERPLancador:
         """
         try:
             url_atual = self.page.url.lower()
-            # Se voltou para a tela de login ou campos de usuário estão visíveis
+
+            # 1. Se foi deslogado (voltou para login.pod ou tela de login inicial visível)
             precisa_login = (
                 "login.pod" in url_atual
                 or self.page.get_by_role("textbox", name="Usuário").count() > 0
-                or self.page.get_by_role("textbox", name="Usuário*").count() > 0
             )
             if precisa_login:
                 print("[ERP - Auto-Recuperação] 🔄 Sessão expirada detectada! Reconectando ao ERP automaticamente...")
                 return self.login_e_navegar_para_entrada()
+
+            # 2. Se a segunda tela de senha (Usuário*) estiver visível, confirma ela
+            campo_usuario_sec = self.page.get_by_role("textbox", name="Usuário*")
+            if campo_usuario_sec.count() > 0:
+                print("[ERP - Auto-Recuperação] Confirmando autenticação secundária do módulo de Entrada...")
+                campo_usuario_sec.first.fill(self.usuario)
+                self.page.get_by_role("textbox", name="Senha*").first.fill(self.senha)
+                self.page.get_by_role("button", name="OK").click()
+                time.sleep(2)
+                return True
+
+            # 3. Se já estiver na tela de Entrada de NF-e (Rec_1020), não faz nada, está perfeita!
+            texto_pagina = self.page.inner_text("body").upper()
+            if any(termo in texto_pagina for termo in ["NÃO IMPORTADAS", "NAO IMPORTADAS", "FILTROS AVANÇADOS", "FILTROS AVANCADOS", "REC_1020", "IMPORTAR [F2]"]):
+                return True
+
+            # 4. Se estiver logado mas fora da tela de Entrada (ex: no menu principal)
+            print("[ERP - Auto-Recuperação] Reposicionando na tela de Entrada de NF-e através do menu...")
+            return self.navegar_menu_para_entrada()
+
+        except Exception as e:
+            print(f"[ERP - Auto-Recuperação] Aviso ao checar sessão: {e}")
+            return True
+
+    def navegar_menu_para_entrada(self) -> bool:
+        """Navega pelo menu Compras -> Entradas -> Entrada NF-e sem refazer o login inicial."""
+        try:
+            print("[ERP] Navegando: Compras -> Entradas de Mercadorias -> Entrada de Mercadorias NF-e...")
+            self.page.locator("a").filter(has_text=re.compile(r"^Compras$")).first.click(timeout=8000)
+            time.sleep(1)
+            self.page.locator("a").filter(has_text=re.compile(r"^Entradas de Mercadorias$")).click(timeout=8000)
+            time.sleep(1)
+            self.page.get_by_role("link", name="Entrada de Mercadorias NF-e").click(timeout=8000)
+            time.sleep(2)
+
+            campo_usuario_sec = self.page.get_by_role("textbox", name="Usuário*")
+            if campo_usuario_sec.count() > 0:
+                print("[ERP] Confirmando autenticação do módulo de Entrada de NF-e...")
+                campo_usuario_sec.first.fill(self.usuario)
+                self.page.get_by_role("textbox", name="Senha*").first.fill(self.senha)
+                self.page.get_by_role("button", name="OK").click()
+                time.sleep(2)
+
             return True
         except Exception as e:
-            print(f"[ERP - Auto-Recuperação] Erro ao verificar sessão: {e}. Refazendo login...")
+            print(f"[ERP] Aviso ao navegar no menu: {e}. Tentando login completo...")
             return self.login_e_navegar_para_entrada()
 
     def login_e_navegar_para_entrada(self) -> bool:
@@ -167,53 +215,110 @@ class ERPLancador:
         print(f"[ERP - Financeiro] Tela de Contas a Pagar detectada. Analisando valores da NF {numero_nota}...")
 
         try:
-            linhas = self.page.locator("table tr, div[role='row']")
+            # 1. Localiza a linha exata da nota na tabela do Cad_0160 (evitando tabelas de fundo como Rec_1020)
             linha_nota = None
+            celulas_textos = []
 
-            for i in range(linhas.count()):
-                txt = linhas.nth(i).inner_text()
-                if numero_nota in txt:
-                    linha_nota = linhas.nth(i)
-                    break
+            def _extrair_celulas_validas(candidato_tr) -> list:
+                if candidato_tr.locator("table").count() > 0:
+                    return []
+                cels = candidato_tr.locator("td, div[role='cell'], div[role='gridcell']")
+                return [cels.nth(k).inner_text().strip() for k in range(cels.count())]
 
-            if not linha_nota:
-                for i in range(linhas.count()):
-                    txt = linhas.nth(i).inner_text()
-                    if "Total Nota" not in txt and any(c.isdigit() for c in txt):
-                        linha_nota = linhas.nth(i)
+            def _linha_parece_cad0160(textos: list) -> bool:
+                if len(textos) < 6:
+                    return False
+                # Precisa conter o número da nota e, após ele, uma data DD/MM/AAAA seguida de valores monetários
+                idx_n = -1
+                for idx, t in enumerate(textos):
+                    if numero_nota in t:
+                        idx_n = idx
                         break
+                if idx_n == -1:
+                    return False
+                for idx in range(idx_n + 1, len(textos)):
+                    if re.search(r"\b\d{2}/\d{2}/\d{4}\b", textos[idx]):
+                        return idx + 2 < len(textos)
+                return False
+
+            # Primeiro tenta dentro da tabela que contém os cabeçalhos do Cad_0160
+            tabela_cad = self.page.locator("table:has-text('Total Nota'):has-text('Total Duplicatas')")
+            if tabela_cad.count() > 0:
+                linhas_cad = tabela_cad.last.locator("tr")
+                for i in range(linhas_cad.count() - 1, -1, -1):
+                    txt = linhas_cad.nth(i).inner_text()
+                    if numero_nota in txt and "Total Nota" not in txt:
+                        textos = _extrair_celulas_validas(linhas_cad.nth(i))
+                        if _linha_parece_cad0160(textos):
+                            linha_nota = linhas_cad.nth(i)
+                            celulas_textos = textos
+                            break
+
+            # Se o cabeçalho estiver em outra <table> (grid separado), busca de trás para frente nas linhas folha da página
+            if not celulas_textos:
+                linhas = self.page.locator("table tr, div[role='row']")
+                for i in range(linhas.count() - 1, -1, -1):
+                    txt = linhas.nth(i).inner_text()
+                    if numero_nota in txt and "Total Nota" not in txt:
+                        textos = _extrair_celulas_validas(linhas.nth(i))
+                        if _linha_parece_cad0160(textos):
+                            linha_nota = linhas.nth(i)
+                            celulas_textos = textos
+                            break
 
             fornecedor = "Desconhecido"
             tot_nota_val = 0.0
             tot_dup_val = 0.0
             qtd_parc_val = 0
 
-            if linha_nota:
-                celulas = linha_nota.locator("td")
-                if celulas.count() >= 8:
-                    fornecedor = celulas.nth(1).inner_text().strip()
-                    tot_nota_str = celulas.nth(5).inner_text().strip()
-                    tot_dup_str = celulas.nth(6).inner_text().strip()
-                    qtd_parc_str = celulas.nth(7).inner_text().strip()
-                else:
-                    txt = linha_nota.inner_text()
-                    valores = re.findall(r"\b\d+[\.,]\d{2}\b", txt)
-                    tot_nota_str = valores[0] if len(valores) > 0 else "0,00"
-                    tot_dup_str = valores[1] if len(valores) > 1 else "0,00"
-                    qtd_parc_str = "0"
-
-                def _converter_valor(v_str: str) -> float:
-                    try:
-                        return float(v_str.replace(".", "").replace(",", ".").strip())
-                    except Exception:
-                        return 0.0
-
-                tot_nota_val = _converter_valor(tot_nota_str)
-                tot_dup_val = _converter_valor(tot_dup_str)
+            def _converter_valor(v_str: str) -> float:
                 try:
-                    qtd_parc_val = int(re.sub(r"\D", "", qtd_parc_str) or 0)
+                    limpo = re.sub(r"[^\d,\.]", "", str(v_str))
+                    if not limpo:
+                        return 0.0
+                    if "," in limpo and "." in limpo:
+                        limpo = limpo.replace(".", "").replace(",", ".")
+                    elif "," in limpo:
+                        limpo = limpo.replace(",", ".")
+                    return float(limpo.strip())
                 except Exception:
-                    qtd_parc_val = 0
+                    return 0.0
+
+            if celulas_textos:
+                total_celulas = len(celulas_textos)
+
+                # Localiza a célula do número da nota
+                idx_nota = 0
+                for idx, c_txt in enumerate(celulas_textos):
+                    if numero_nota in c_txt:
+                        idx_nota = idx
+                        break
+
+                # Localiza a Data de Emissão (DD/MM/AAAA) APÓS o número da nota
+                idx_data = -1
+                for idx in range(idx_nota + 1, total_celulas):
+                    if re.search(r"\b\d{2}/\d{2}/\d{4}\b", celulas_textos[idx]):
+                        idx_data = idx
+                        break
+
+                if idx_data != -1 and idx_data + 2 < total_celulas:
+                    tot_nota_val = _converter_valor(celulas_textos[idx_data + 1])
+                    tot_dup_val = _converter_valor(celulas_textos[idx_data + 2])
+                    if idx_data + 3 < total_celulas:
+                        try:
+                            qtd_parc_val = int(re.sub(r"\D", "", celulas_textos[idx_data + 3]) or 1)
+                        except Exception:
+                            qtd_parc_val = 1
+
+                for c_txt in celulas_textos[:idx_nota]:
+                    if len(c_txt) > 3 and not re.search(r"^\d+$", c_txt) and not re.search(r"\d{2}/\d{2}/\d{4}", c_txt):
+                        fornecedor = c_txt
+                        break
+                if fornecedor == "Desconhecido":
+                    for c_txt in celulas_textos:
+                        if len(c_txt) > 3 and not re.search(r"^\d+$", c_txt) and not re.search(r"\d{2}/\d{2}/\d{4}", c_txt):
+                            fornecedor = c_txt
+                            break
 
             print(f"[ERP - Financeiro] Fornecedor: {fornecedor}")
             print(f"[ERP - Financeiro] Total Nota: R$ {tot_nota_val:.2f} | Total Duplicatas: R$ {tot_dup_val:.2f} | Parcelas: {qtd_parc_val}")
@@ -265,10 +370,22 @@ class ERPLancador:
             if campo_nota.count() == 0:
                 campo_nota = self.page.locator("input[name*='nota'], input[id*='nota']")
 
+            num_str = str(numero_nota).strip()
             campo_nota.first.click()
-            campo_nota.first.fill(str(numero_nota).strip())
+            campo_nota.first.fill(num_str)
             campo_nota.first.press("Enter")
-            time.sleep(0.5)
+            time.sleep(1.2)
+
+            # Verifica se a nota apareceu na caixa/lista logo abaixo do campo ao pressionar Enter
+            if not self._nota_apareceu_na_lista_filtro(num_str):
+                time.sleep(1.2)
+                if not self._nota_apareceu_na_lista_filtro(num_str):
+                    try:
+                        campo_nota.first.fill("")
+                    except Exception:
+                        pass
+                    msg = f"Nota {num_str} não existe no ERP (não apareceu na lista de filtro ao digitar)."
+                    return self._marcar_nota_inexistente(id_unico, num_str, origem_contato, msg)
 
             # 4. Consultar em 'Não Importadas'
             print(f"[ERP] Consultando nota {numero_nota} no filtro 'Não Importadas'...")
@@ -341,21 +458,33 @@ class ERPLancador:
 
             texto_completo = f"{texto_tela}\n{texto_iframe}".upper()
 
-            indicadores_sem_cadastro = [
+            # 1. Verifica indicadores de sucesso explícito na tela de resumo
+            indicadores_sucesso = [
+                "NOTAS IMPORTADAS 1",
+                "NOTAS IMPORTADAS: 1",
+                "TOTAL DE NOTAS IMPORTADAS: 1",
+                "TOTAL IMPORTADAS: 1",
+                "IMPORTADAS 1",
+            ]
+            importacao_confirmada = any(s in texto_completo for s in indicadores_sucesso)
+
+            # 2. Frases específicas de erro que só existem quando a importação foi abortada por falta de cadastro
+            frases_erro_especificas = [
                 "NÃO PODE SER ENCONTRADO NO CADASTRO DE PRODUTOS",
                 "NAO PODE SER ENCONTRADO NO CADASTRO DE PRODUTOS",
-                "CADASTRO DE PRODUTOS",
-                "NOTAS NÃO IMPORTADAS 1",
-                "NOTAS NAO IMPORTADAS 1",
                 "IMPORTAÇÃO ABORTADA",
                 "IMPORTACAO ABORTADA",
-                "DIVERGÊNCIA",
-                "DIVERGENCIA",
-                "NENHUM PRODUTO ATIVADO",
             ]
 
-            if any(ind in texto_completo for ind in indicadores_sem_cadastro):
-                detalhe = "Produtos não encontrados no cadastro do ERP (Importação Abortada / Divergência)"
+            # Rejeição confirmada no resumo (0 importadas E 1 não importada)
+            resumo_rejeitou = (
+                ("NOTAS NÃO IMPORTADAS 1" in texto_completo or "NOTAS NAO IMPORTADAS 1" in texto_completo)
+                and ("NOTAS IMPORTADAS 0" in texto_completo or "NOTAS IMPORTADAS: 0" in texto_completo)
+            )
+
+            # Só classifica como produto sem cadastro se houver erro explícito E a importação não tiver sido confirmada
+            if (any(ind in texto_completo for ind in frases_erro_especificas) or resumo_rejeitou) and not importacao_confirmada:
+                detalhe = "Produtos não encontrados no cadastro do ERP (Importação Abortada)"
                 match_obs = re.search(r"(NOTA \d+\s*:\s*O ITEM [^\n\r]+)", texto_completo)
                 if match_obs:
                     detalhe = match_obs.group(1).strip()
@@ -408,6 +537,32 @@ class ERPLancador:
         except Exception:
             pass
 
+    def _nota_apareceu_na_lista_filtro(self, numero_nota: str) -> bool:
+        """
+        Verifica se após digitar a nota e pressionar Enter, ela foi adicionada
+        na caixa/lista de seleção logo abaixo do campo 'Número nota fiscal' (ex: '1 - 7484959').
+        """
+        try:
+            num_esc = re.escape(str(numero_nota).strip())
+            padrao = re.compile(rf"(?:^|\s|-){num_esc}(?:\s|$)")
+
+            # 1. Verifica opções de <select> (comum no SGFPOD/WebSpeed)
+            opcoes = self.page.locator("select option, [role='option'], [role='listbox'] li")
+            for i in range(opcoes.count()):
+                txt = opcoes.nth(i).inner_text().strip()
+                if padrao.search(txt):
+                    return True
+
+            # 2. Fallback caso o componente use uma div/lista customizada com o padrão "1 - <nota>"
+            itens_custom = self.page.get_by_text(re.compile(rf"^\s*\d+\s*-\s*{num_esc}\s*$"))
+            if itens_custom.count() > 0:
+                return True
+
+            return False
+        except Exception:
+            # Em caso de falha na leitura do DOM, não bloqueia o fluxo normal
+            return True
+
     def _marcar_duplicidade(self, id_unico: str, numero_nota: str, origem: str, msg: str) -> Dict[str, Any]:
         print(f"[ERP - Duplicidade] {msg}")
         atualizar_status_nota(id_unico, "duplicada_erp", msg)
@@ -420,11 +575,17 @@ class ERPLancador:
         registrar_produto_sem_cadastro(numero_nota, origem, msg)
         return {"status": "produto_sem_cadastro", "mensagem": msg}
 
+    def _marcar_nota_inexistente(self, id_unico: str, numero_nota: str, origem: str, msg: str) -> Dict[str, Any]:
+        print(f"[ERP - Nota Inexistente] {msg}")
+        atualizar_status_nota(id_unico, "nota_inexistente", msg)
+        registrar_nota_inexistente(numero_nota, origem, msg)
+        return {"status": "nota_inexistente", "mensagem": msg}
+
     def fechar(self) -> None:
         try:
             if self.context:
                 self.context.close()
-            if self._playwright:
+            if self._playwright and not self._external_playwright:
                 self._playwright.stop()
         except Exception:
             pass

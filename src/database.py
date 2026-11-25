@@ -92,11 +92,11 @@ def atualizar_status_nota(
 ) -> None:
     """
     Atualiza o status da nota e incrementa tentativas em caso de erro.
-    Status válidos: 'pendente', 'lancado', 'duplicada_erp', 'produto_sem_cadastro', 'erro'
+    Status válidos: 'pendente', 'lancado', 'duplicada_erp', 'produto_sem_cadastro', 'nota_inexistente', 'erro'
     """
     init_db()
     agora = datetime.now().isoformat()
-    incrementar_tentativa = 1 if novo_status in ("erro", "duplicada_erp", "produto_sem_cadastro") else 0
+    incrementar_tentativa = 1 if novo_status in ("erro", "duplicada_erp", "produto_sem_cadastro", "nota_inexistente") else 0
 
     with get_connection() as conn:
         cursor = conn.cursor()

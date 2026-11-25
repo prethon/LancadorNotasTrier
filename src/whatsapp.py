@@ -17,9 +17,14 @@ CHECKPOINT_FILE = DATA_DIR / "whatsapp_checkpoint.json"
 
 
 class WhatsAppMonitor:
-    def __init__(self, headless: bool = False):
-        self.headless = headless if not MODO_TESTE else False
-        self._playwright = None
+    def __init__(self, headless: Optional[bool] = None, playwright_instance=None):
+        if headless is None:
+            self.headless = not MODO_TESTE
+        else:
+            self.headless = headless
+
+        self._external_playwright = playwright_instance is not None
+        self._playwright = playwright_instance
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
 
@@ -32,7 +37,9 @@ class WhatsAppMonitor:
 
     def iniciar(self) -> None:
         """Inicializa o navegador com perfil persistente para manter a sessão salva."""
-        self._playwright = sync_playwright().start()
+        if not self._playwright:
+            self._playwright = sync_playwright().start()
+
         args = [
             "--disable-blink-features=AutomationControlled",
             "--no-default-browser-check",
@@ -91,13 +98,18 @@ class WhatsAppMonitor:
             # Se não há chat fixo, verifica se há conversa aberta no painel principal (#main)
             painel_principal = self.page.locator("#main")
             if painel_principal.count() == 0:
-                print("[WhatsApp] Nenhuma conversa aberta na tela. Abrindo o primeiro chat da lista...")
-                primeiro_chat = self.page.locator("#pane-side div[role='listitem'], #pane-side div[tabindex='-1']")
+                print("[WhatsApp] Nenhuma conversa aberta na tela. Abrindo o primeiro chat da lista lateral...")
+                primeiro_chat = self.page.locator(
+                    "#pane-side div[role='row'], #pane-side div[role='gridcell'], "
+                    "#pane-side div[data-testid='cell-frame-container'], #pane-side div[role='listitem'], #pane-side div[tabindex='-1']"
+                )
                 if primeiro_chat.count() > 0:
                     primeiro_chat.first.click()
                     time.sleep(1.5)
 
-        header_title = self.page.locator("#main header span[title], #main header div[role='button'] span[dir='auto'], header span[title]")
+        header_title = self.page.locator(
+            "#main header span[title], #main header div[role='button'] span[dir='auto'], #main header span[dir='auto'], header span[title]"
+        )
         nome_contato = "Chat_Ativo"
         if header_title.count() > 0:
             texto = header_title.first.inner_text().strip()
@@ -135,12 +147,18 @@ class WhatsAppMonitor:
     def _extrair_notas_do_chat_aberto(self, nome_contato: str, checkpoint: Dict[str, Any]) -> Tuple[List[str], List[str]]:
         """Lê os balões da conversa atualmente aberta no #main e enfileira novas notas."""
         time.sleep(1)
-        locators_mensagens = self.page.locator("#main div.message-in, #main div.message-out, div.message-in, div.message-out")
+        # Seletores abrangentes para cobrir versões recentes do WhatsApp Web
+        locators_mensagens = self.page.locator(
+            "#main div[data-pre-plain-text], #main div.message-in, #main div.message-out, "
+            "#main div[data-testid='msg-container'], div[data-pre-plain-text], div.message-in, div.message-out"
+        )
         total_elementos = locators_mensagens.count()
 
         if total_elementos == 0:
+            print(f"[WhatsApp] Nenhuma mensagem encontrada no painel da conversa '{nome_contato}'.")
             return [], []
 
+        print(f"[WhatsApp] Lendo mensagens de '{nome_contato}' ({total_elementos} balões detectados)...")
         ids_processados_set = set(checkpoint.get("ids_processados", []))
         novas_notas: List[str] = []
         novos_ids: List[str] = []
@@ -155,20 +173,40 @@ class WhatsAppMonitor:
                 if msg_id in ids_processados_set:
                     continue
 
-                texto = elemento.inner_text().strip()
+                # Tenta capturar apenas o texto puro da mensagem (evitando horário/status)
+                texto_elem = elemento.locator("span.selectable-text, span.copyable-text, span[dir='ltr']")
+                if texto_elem.count() > 0:
+                    texto = texto_elem.first.inner_text().strip()
+                else:
+                    texto = elemento.inner_text().strip()
+
                 if not texto:
                     continue
 
                 novos_ids.append(msg_id)
 
-                numeros = extrair_numeros_notas(texto)
-                for num in numeros:
-                    foi_inserida = inserir_nota(numero_nota=num, origem_contato=nome_contato)
-                    if foi_inserida:
-                        print(f"  -> [NOVA NOTA CAPTURADA] Nº {num} ({nome_contato}) enfileirada no banco local.")
-                        novas_notas.append(num)
+                # Identifica se há remetente específico gravado no atributo data-pre-plain-text
+                origem_especifica = nome_contato
+                pre_text = elemento.get_attribute("data-pre-plain-text") or ""
+                if pre_text:
+                    match_remetente = re.search(r"\]\s*([^:]+):", pre_text)
+                    if match_remetente:
+                        nome_remetente = match_remetente.group(1).strip()
+                        if nome_remetente and nome_remetente.lower() != "você":
+                            origem_especifica = nome_remetente
 
-            except Exception:
+                numeros = extrair_numeros_notas(texto)
+                if numeros:
+                    print(f"  [WhatsApp] Mensagem identificada de '{origem_especifica}': '{texto}' -> Notas: {numeros}")
+                    for num in numeros:
+                        foi_inserida = inserir_nota(numero_nota=num, origem_contato=origem_especifica)
+                        if foi_inserida:
+                            print(f"  -> [NOVA NOTA CAPTURADA] Nº {num} ({origem_especifica}) enfileirada no banco local.")
+                            novas_notas.append(num)
+                        else:
+                            print(f"  -> [INFO] Nº {num} ({origem_especifica}) já estava no banco de dados.")
+
+            except Exception as err:
                 continue
 
         return novas_notas, novos_ids
@@ -181,23 +219,29 @@ class WhatsAppMonitor:
         """
         checkpoint = self._carregar_dados_checkpoint()
 
-        # 1. Se for a primeira execução de todas, define o marco zero
+        # 1. Se for a primeira execução de todas, define o marco zero mas PRESERVA as últimas 5 mensagens
         if not checkpoint:
             nome_contato = self.selecionar_chat_alvo()
-            locators = self.page.locator("#main div.message-in, #main div.message-out, div.message-in, div.message-out")
+            locators = self.page.locator(
+                "#main div[data-pre-plain-text], #main div.message-in, #main div.message-out, div.message-in, div.message-out"
+            )
+            total_locs = locators.count()
             ids_iniciais = []
-            for i in range(locators.count()):
+            for i in range(total_locs):
                 ids_iniciais.append(self._gerar_id_mensagem(locators.nth(i)))
 
+            # Deixa as últimas 5 mensagens fora do histórico inicial para capturar notas recém-enviadas
+            limite_antigo = max(0, len(ids_iniciais) - 5)
+            ids_historico = ids_iniciais[:limite_antigo]
             ultimo_id = ids_iniciais[-1] if ids_iniciais else ""
-            novo_cp = {
+
+            checkpoint = {
                 "criado_em": time.time(),
                 "ultimo_id_processado": ultimo_id,
-                "ids_processados": ids_iniciais[-300:],
+                "ids_processados": ids_historico,
             }
-            self._salvar_dados_checkpoint(novo_cp)
-            print("[WhatsApp] 🚀 Marco zero definido! Mensagens antigas ignoradas.")
-            return 0, []
+            self._salvar_dados_checkpoint(checkpoint)
+            print("[WhatsApp] 🚀 Marco zero inicial definido! Mensagens recentes mantidas para leitura imediata.")
 
         todas_novas_notas: List[str] = []
         todos_novos_ids: List[str] = []
@@ -209,48 +253,56 @@ class WhatsAppMonitor:
             todas_novas_notas.extend(novas)
             todos_novos_ids.extend(ids)
         else:
-            # 3. VARREDURA MULTI-LOJAS: Percorre todas as conversas com mensagens não lidas
-            seletor_nao_lidos = (
-                "#pane-side div[role='listitem']:has(span[aria-label*='não lida']), "
-                "#pane-side div[role='listitem']:has(span[aria-label*='unread']), "
-                "#pane-side div[role='listitem']:has([data-icon*='unread']), "
-                "#pane-side div[role='listitem']:has(span.x1rg5ohu)"
+            # 3. VARREDURA MULTI-LOJAS: Detecta conversas com mensagens não lidas diretamente pelo selo/badge
+            seletor_badges_nao_lidos = (
+                "#pane-side span[aria-label*='não lida'], "
+                "#pane-side span[aria-label*='não lidas'], "
+                "#pane-side span[aria-label*='unread'], "
+                "#pane-side span[aria-label*='Unread'], "
+                "#pane-side span[data-testid='icon-unread-count'], "
+                "#pane-side span[data-icon='unread-count'], "
+                "#pane-side [data-testid='unread-count']"
             )
 
-            chats_visitados = 0
-            max_chats = 15  # Limite de segurança por ciclo
+            badges_nao_lidos = self.page.locator(seletor_badges_nao_lidos)
+            total_badges = badges_nao_lidos.count()
 
-            while chats_visitados < max_chats:
-                nao_lidos = self.page.locator(seletor_nao_lidos)
-                if nao_lidos.count() == 0:
-                    break
+            if total_badges > 0:
+                print(f"[WhatsApp Multi-Lojas] Encontrada(s) {total_badges} conversa(s) com novas mensagens!")
 
-                try:
-                    # Clica na conversa com mensagem nova
-                    item_chat = nao_lidos.first
-                    item_chat.click()
-                    time.sleep(1.2)
-                    chats_visitados += 1
+                # Processa até 15 conversas novas
+                chats_a_processar = min(total_badges, 15)
+                for i in range(chats_a_processar):
+                    try:
+                        badges_atual = self.page.locator(seletor_badges_nao_lidos)
+                        if badges_atual.count() == 0:
+                            break
 
-                    # Identifica o nome da loja/contato
-                    header_span = self.page.locator("#main header span[title], #main header div[role='button'] span[dir='auto']")
-                    nome_loja = "Loja_WhatsApp"
-                    if header_span.count() > 0:
-                        txt = header_span.first.inner_text().strip()
-                        if txt:
-                            nome_loja = txt
+                        # Clica diretamente no selo de não lida
+                        badge_alvo = badges_atual.first
+                        badge_alvo.click()
+                        time.sleep(1.2)
 
-                    print(f"[WhatsApp Multi-Lojas] Verificando novas mensagens de: {nome_loja}...")
-                    novas, ids = self._extrair_notas_do_chat_aberto(nome_loja, checkpoint)
-                    todas_novas_notas.extend(novas)
-                    todos_novos_ids.extend(ids)
+                        # Identifica o nome da loja/contato
+                        header_span = self.page.locator(
+                            "#main header span[title], #main header div[role='button'] span[dir='auto'], #main header span[dir='auto']"
+                        )
+                        nome_loja = "Loja_WhatsApp"
+                        if header_span.count() > 0:
+                            txt = header_span.first.inner_text().strip()
+                            if txt:
+                                nome_loja = txt
 
-                except Exception as err_chat:
-                    print(f"[WhatsApp] Aviso ao processar conversa não lida: {err_chat}")
-                    break
+                        print(f"[WhatsApp Multi-Lojas] Abrindo conversa de: {nome_loja}...")
+                        novas, ids = self._extrair_notas_do_chat_aberto(nome_loja, checkpoint)
+                        todas_novas_notas.extend(novas)
+                        todos_novos_ids.extend(ids)
 
-            # Se não havia nenhuma conversa com bolinha verde, lê a conversa aberta ou a do topo
-            if chats_visitados == 0:
+                    except Exception as err_chat:
+                        print(f"[WhatsApp] Aviso ao processar conversa não lida: {err_chat}")
+                        continue
+            else:
+                # Se não havia nenhuma conversa com bolinha verde, lê a conversa que já está aberta ou a do topo
                 nome_contato = self.selecionar_chat_alvo()
                 novas, ids = self._extrair_notas_do_chat_aberto(nome_contato, checkpoint)
                 todas_novas_notas.extend(novas)
@@ -282,7 +334,13 @@ class WhatsAppMonitor:
                 time.sleep(1)
 
             print(f"[WhatsApp] Procurando mensagem da NF {numero_nota} para reagir com ✅...")
-            bolhas = self.page.locator(f"#main div.message-in:has-text('{numero_nota}'), #main div.message-out:has-text('{numero_nota}'), div.message-in:has-text('{numero_nota}')")
+            bolhas = self.page.locator(
+                f"#main div[data-pre-plain-text]:has-text('{numero_nota}'), "
+                f"#main div.message-in:has-text('{numero_nota}'), "
+                f"#main div.message-out:has-text('{numero_nota}'), "
+                f"#main div[data-testid='msg-container']:has-text('{numero_nota}'), "
+                f"div.message-in:has-text('{numero_nota}')"
+            )
             if bolhas.count() == 0:
                 return False
 
@@ -347,7 +405,7 @@ class WhatsAppMonitor:
         try:
             if self.context:
                 self.context.close()
-            if self._playwright:
+            if self._playwright and not self._external_playwright:
                 self._playwright.stop()
         except Exception:
             pass

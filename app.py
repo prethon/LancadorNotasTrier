@@ -8,6 +8,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 
+from playwright.sync_api import sync_playwright
 from src.config import (
     REPORTS_DIR,
     MODO_TESTE,
@@ -16,6 +17,8 @@ from src.config import (
     ERP_URL,
     ERP_USUARIO,
     ERP_SENHA,
+    WHATSAPP_ALERTA,
+    salvar_env,
 )
 from src.database import (
     init_db,
@@ -34,7 +37,7 @@ from src.updater import (
     baixar_e_aplicar_atualizacao,
     reiniciar_aplicacao,
 )
-from main import etapa_capturar_whatsapp, etapa_lancar_erp, zerar_checkpoint_whatsapp
+from main import etapa_capturar_whatsapp, etapa_lancar_erp, etapa_confirmar_whatsapp, zerar_checkpoint_whatsapp
 
 
 class RedirecionadorTexto:
@@ -72,7 +75,7 @@ class App(tk.Tk):
         self.mostrar_senha = False
 
         # Variável para Notificações no WhatsApp
-        self.var_whatsapp_alerta = tk.StringVar(value="")
+        self.var_whatsapp_alerta = tk.StringVar(value=WHATSAPP_ALERTA)
 
         # Variável para Teste Individual de Nota
         self.var_nota_teste = tk.StringVar(value="")
@@ -168,6 +171,10 @@ class App(tk.Tk):
         ent_zap_alerta = ttk.Entry(frame_cred, textvariable=self.var_whatsapp_alerta, width=16, font=("Menlo", 9))
         ent_zap_alerta.pack(side=tk.LEFT, padx=(0, 8))
         ttk.Label(frame_cred, text="(Ex: 5511999998888 ou Nome Contato)", font=("Arial", 8, "italic"), foreground="#666").pack(side=tk.LEFT)
+
+        # Salvar automaticamente ao sair de qualquer campo de credencial/configuração
+        for widget in (ent_url, ent_user, self.ent_pass, ent_zap_alerta):
+            widget.bind("<FocusOut>", lambda _e: self._salvar_configuracoes_interface())
 
         # 3. Controles de Execução Geral & Teste de Nota
         frame_controles = ttk.LabelFrame(self, text=" Controles de Execução & Teste ", padding=6)
@@ -278,6 +285,7 @@ class App(tk.Tk):
         self.card_lancadas = self._criar_card(frame_cards, "Lançadas", "0", "#28a745", arquivo_relatorio="notas_lancadas.csv")
         self.card_duplicadas = self._criar_card(frame_cards, "Duplicadas", "0", "#fd7e14", arquivo_relatorio="duplicidades.csv")
         self.card_sem_cadastro = self._criar_card(frame_cards, "s/ Cadastro", "0", "#6f42c1", arquivo_relatorio="produtos_sem_cadastro.csv")
+        self.card_inexistentes = self._criar_card(frame_cards, "Inexistentes", "0", "#e83e8c", arquivo_relatorio="notas_inexistentes.csv")
         self.card_erros = self._criar_card(frame_cards, "Outros Erros", "0", "#dc3545", arquivo_relatorio="outros_erros.csv")
         self.card_sem_boleto = self._criar_card(frame_cards, "⚠️ s/ Boletos", "0", "#d39e00", arquivo_relatorio="notas_sem_boleto.csv")
         self.card_boletos_div = self._criar_card(frame_cards, "💰 Boletos Div (>R$7)", "0", "#c82333", arquivo_relatorio="boletos_divergentes.csv")
@@ -479,6 +487,7 @@ class App(tk.Tk):
             "• Serão ZERADOS:\n"
             "   - Duplicidades no ERP\n"
             "   - Produtos sem Cadastro\n"
+            "   - Notas Inexistentes\n"
             "   - Outros Erros\n"
             "   - Notas Sem Boletos\n"
             "   - Boletos Divergentes (> R$ 7)\n\n"
@@ -494,6 +503,7 @@ class App(tk.Tk):
         arquivos_a_limpar = [
             "duplicidades.csv",
             "produtos_sem_cadastro.csv",
+            "notas_inexistentes.csv",
             "outros_erros.csv",
             "notas_sem_boleto.csv",
             "boletos_divergentes.csv",
@@ -614,6 +624,7 @@ class App(tk.Tk):
             messagebox.showwarning("Atenção", "Digite o número da nota que deseja testar!")
             return
 
+        self._salvar_configuracoes_interface()
         url = self.var_erp_url.get().strip()
         user = self.var_erp_usuario.get().strip()
         senha = self.var_erp_senha.get().strip()
@@ -641,6 +652,7 @@ class App(tk.Tk):
         self._iniciar_tarefa(teste, f"Testando Lançamento da Nota {numero}...")
 
     def _iniciar_continuo(self):
+        self._salvar_configuracoes_interface()
         url = self.var_erp_url.get().strip()
         user = self.var_erp_usuario.get().strip()
         senha = self.var_erp_senha.get().strip()
@@ -649,41 +661,69 @@ class App(tk.Tk):
         num_alerta = self.var_whatsapp_alerta.get().strip()
 
         def loop_continuo():
-            print(f"[Painel] Iniciando monitoramento contínuo na Central: {url}...")
+            print(f"[Painel] Iniciando monitoramento contínuo em tempo real...")
+            print(f"[Painel] Central ERP: {url} | Intervalo: {intervalo}s")
             if num_alerta:
                 print(f"[Painel] Notificações ativas para o WhatsApp: {num_alerta}")
 
-            while not self.evento_parar.is_set():
-                # 1. Captura no WhatsApp
-                with WhatsAppMonitor() as monitor:
-                    if monitor.abrir_e_garantir_login():
-                        monitor.ler_mensagens_e_enfileirar()
-                        self._atualizar_metricas()
+            with sync_playwright() as p:
+                # 1. Abre o WhatsApp uma única vez e mantém ativo na tela
+                with WhatsAppMonitor(playwright_instance=p) as zap:
+                    if not zap.abrir_e_garantir_login():
+                        print("[Painel] Não foi possível autenticar o WhatsApp Web. Abortando.")
+                        return
 
-                        if self.evento_parar.is_set():
-                            break
+                    print("[Painel] WhatsApp Web conectado e pronto na tela.")
 
-                        # 2. Lançamento no ERP com reações e alertas via zap
-                        etapa_lancar_erp(
-                            limite=limite,
-                            url=url,
-                            usuario=user,
-                            senha=senha,
-                            zap_monitor=monitor,
-                            numero_alerta=num_alerta,
-                        )
-                        self._atualizar_metricas()
+                    # 2. Abre o ERP uma única vez, faz login e posiciona no Rec_1020
+                    with ERPLancador(url=url, usuario=user, senha=senha, playwright_instance=p) as erp:
+                        erp.login_e_navegar_para_entrada()
+                        print("[Painel] ERP conectado e posicionado na tela Rec_1020.")
+                        print("[Painel] 🚀 Automação pronta! WhatsApp e ERP sincronizados sem recarregar.")
 
-                for _ in range(intervalo):
-                    if self.evento_parar.is_set():
-                        break
-                    time.sleep(1)
+                        while not self.evento_parar.is_set():
+                            # Auto-recuperação do ERP caso a sessão tenha expirado por inatividade
+                            erp.verificar_ou_recuperar_sessao()
+
+                            # Varre novas mensagens no WhatsApp aberto
+                            novas_notas, _ = zap.ler_mensagens_e_enfileirar()
+                            self._atualizar_metricas()
+
+                            # Processa notas pendentes diretamente no ERP já aberto
+                            notas_pendentes = obter_notas_pendentes(limite=limite)
+                            for nota in notas_pendentes:
+                                if self.evento_parar.is_set():
+                                    break
+
+                                num = nota["numero_nota"]
+                                origem = nota["origem_contato"]
+                                id_unico = nota["id_unico"]
+
+                                res = erp.lancar_nota(id_unico=id_unico, numero_nota=num, origem_contato=origem)
+                                st = res.get("status", "")
+                                self._atualizar_metricas()
+
+                                # Se lançada com sucesso, reage na hora no WhatsApp já aberto
+                                if st == "lancado":
+                                    try:
+                                        zap.reagir_mensagem_nota_lancada(num, origem_contato=origem)
+                                    except Exception as err_reagir:
+                                        print(f"[WhatsApp] Aviso ao reagir com ✅: {err_reagir}")
+
+                                # Dispara alerta de inconsistência/boleto se configurado
+                                self._enviar_alertas_whatsapp(zap, num_alerta, res, num, origem)
+
+                            for _ in range(intervalo):
+                                if self.evento_parar.is_set():
+                                    break
+                                time.sleep(1)
 
             print("[Painel] Monitoramento contínuo finalizado.")
 
         self._iniciar_tarefa(loop_continuo, "Monitoramento Contínuo Ativo")
 
     def _executar_ciclo_unico(self):
+        self._salvar_configuracoes_interface()
         url = self.var_erp_url.get().strip()
         user = self.var_erp_usuario.get().strip()
         senha = self.var_erp_senha.get().strip()
@@ -692,18 +732,26 @@ class App(tk.Tk):
 
         def ciclo():
             print(f"[Painel] Executando ciclo único na Central: {url}...")
-            with WhatsAppMonitor() as monitor:
-                if monitor.abrir_e_garantir_login():
-                    monitor.ler_mensagens_e_enfileirar()
+            with sync_playwright() as p:
+                with WhatsAppMonitor(playwright_instance=p) as zap:
+                    if not zap.abrir_e_garantir_login():
+                        return
+                    zap.ler_mensagens_e_enfileirar()
                     self._atualizar_metricas()
-                    etapa_lancar_erp(
-                        limite=limite,
-                        url=url,
-                        usuario=user,
-                        senha=senha,
-                        zap_monitor=monitor,
-                        numero_alerta=num_alerta,
-                    )
+
+                    with ERPLancador(url=url, usuario=user, senha=senha, playwright_instance=p) as erp:
+                        erp.login_e_navegar_para_entrada()
+                        notas_pendentes = obter_notas_pendentes(limite=limite)
+                        for nota in notas_pendentes:
+                            res = erp.lancar_nota(nota["id_unico"], nota["numero_nota"], nota["origem_contato"])
+                            st = res.get("status", "")
+                            self._atualizar_metricas()
+                            if st == "lancado":
+                                try:
+                                    zap.reagir_mensagem_nota_lancada(nota["numero_nota"], origem_contato=nota["origem_contato"])
+                                except Exception as e:
+                                    print(f"[WhatsApp] Aviso ao reagir com ✅: {e}")
+                            self._enviar_alertas_whatsapp(zap, num_alerta, res, nota["numero_nota"], nota["origem_contato"])
             print("[Painel] Ciclo concluído com sucesso.")
 
         self._iniciar_tarefa(cycle := ciclo, "Executando Ciclo Único...")
@@ -717,6 +765,7 @@ class App(tk.Tk):
         self._iniciar_tarefa(zap, "Lendo WhatsApp...")
 
     def _executar_apenas_erp(self):
+        self._salvar_configuracoes_interface()
         url = self.var_erp_url.get().strip()
         user = self.var_erp_usuario.get().strip()
         senha = self.var_erp_senha.get().strip()
@@ -724,7 +773,14 @@ class App(tk.Tk):
 
         def erp():
             print(f"[Painel] Lançando notas pendentes no ERP ({url})...")
-            etapa_lancar_erp(limite=limite, url=url, usuario=user, senha=senha)
+            with ERPLancador(url=url, usuario=user, senha=senha) as erp_inst:
+                erp_inst.login_e_navegar_para_entrada()
+                notas_pendentes = obter_notas_pendentes(limite=limite)
+                if not notas_pendentes:
+                    print("[ERP] Nenhuma nota pendente de lançamento na fila.")
+                for nota in notas_pendentes:
+                    erp_inst.lancar_nota(nota["id_unico"], nota["numero_nota"], nota["origem_contato"])
+                    self._atualizar_metricas()
             print("[Painel] Lançamento concluído.")
 
         self._iniciar_tarefa(erp, "Lançando no ERP...")
@@ -734,6 +790,32 @@ class App(tk.Tk):
         self.evento_parar.set()
         self.btn_parar.config(state=tk.DISABLED)
 
+    def _enviar_alertas_whatsapp(self, zap, num_alerta: str, res: dict, num: str, origem: str) -> None:
+        """Envia alertas no WhatsApp para inconsistências e notas inexistentes."""
+        if not num_alerta:
+            return
+        st = res.get("status", "")
+        try:
+            if st == "produto_sem_cadastro":
+                zap.enviar_alerta(
+                    num_alerta,
+                    f"⚠️ *Alerta Lançador de Notas*\nA *NF {num}* possui produtos pendentes de cadastro no ERP!\nOrigem: {origem}",
+                )
+            elif st == "nota_inexistente":
+                zap.enviar_alerta(
+                    num_alerta,
+                    f"🔎 *Alerta Nota Inexistente*\nA *NF {num}* não existe no ERP (não apareceu no filtro ao digitar)!\nOrigem: {origem}",
+                )
+            fin = res.get("financeiro", {})
+            if fin.get("divergencia"):
+                dif = fin.get("diferenca", 0.0)
+                zap.enviar_alerta(
+                    num_alerta,
+                    f"💰 *Alerta Boleto Divergente*\nA *NF {num}* tem boleto R$ {dif:.2f} maior que a nota!\nOrigem: {origem}",
+                )
+        except Exception as err_alerta:
+            print(f"[WhatsApp] Aviso ao enviar alerta: {err_alerta}")
+
     def _atualizar_metricas(self):
         try:
             stats = obter_resumo_estatisticas()
@@ -741,6 +823,7 @@ class App(tk.Tk):
             self.card_lancadas.config(text=str(stats.get("lancado", 0)))
             self.card_duplicadas.config(text=str(stats.get("duplicada_erp", 0)))
             self.card_sem_cadastro.config(text=str(stats.get("produto_sem_cadastro", 0)))
+            self.card_inexistentes.config(text=str(stats.get("nota_inexistente", 0)))
             self.card_erros.config(text=str(stats.get("erro", 0)))
 
             tot_sem_boleto = self._contar_linhas_relatorio("notas_sem_boleto.csv")
@@ -772,7 +855,30 @@ class App(tk.Tk):
                 break
         self.after(100, self._processar_fila_logs)
 
+    def _salvar_configuracoes_interface(self):
+        """Grava no .env as credenciais e parâmetros digitados na interface."""
+        try:
+            dados = {
+                "ERP_URL": self.var_erp_url.get().strip(),
+                "ERP_USUARIO": self.var_erp_usuario.get().strip(),
+                "ERP_SENHA": self.var_erp_senha.get().strip(),
+                "WHATSAPP_ALERTA": self.var_whatsapp_alerta.get().strip(),
+                "MODO_TESTE": "true" if self.var_modo_teste.get() else "false",
+            }
+            try:
+                dados["LIMITE_NOTAS_POR_EXECUCAO"] = str(self.var_limite_notas.get())
+            except tk.TclError:
+                pass
+            try:
+                dados["INTERVALO_MONITORAMENTO_SEGUNDOS"] = str(self.var_intervalo.get())
+            except tk.TclError:
+                pass
+            salvar_env(dados)
+        except Exception as e:
+            print(f"[Painel] Aviso ao salvar configurações: {e}")
+
     def _ao_fechar(self):
+        self._salvar_configuracoes_interface()
         if self.esta_executando:
             if messagebox.askyesno("Encerrar", "A automação ainda está rodando. Deseja realmente parar e sair?"):
                 self.evento_parar.set()
