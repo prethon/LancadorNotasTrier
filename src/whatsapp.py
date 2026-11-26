@@ -325,6 +325,22 @@ class WhatsAppMonitor:
 
         return novas_notas, novos_ids
 
+    def _obter_chat_aberto_atual(self) -> Optional[str]:
+        """Retorna o nome do chat atualmente aberto no painel #main, ou None se não houver nenhum."""
+        try:
+            if self.page.locator("#main").count() == 0:
+                return None
+            header_title = self.page.locator(
+                "#main header span[title], #main header div[role='button'] span[dir='auto'], #main header span[dir='auto']"
+            )
+            if header_title.count() > 0:
+                texto = header_title.first.inner_text().strip()
+                if texto:
+                    return texto
+            return "Chat_Ativo"
+        except Exception:
+            return None
+
     def ler_mensagens_e_enfileirar(self) -> Tuple[int, List[str]]:
         """
         Varre TODAS as conversas com mensagens novas/não lidas (Multi-Lojas).
@@ -367,7 +383,21 @@ class WhatsAppMonitor:
             todas_novas_notas.extend(novas)
             todos_novos_ids.extend(ids)
         else:
-            # 3. VARREDURA MULTI-LOJAS: Detecta conversas com mensagens não lidas diretamente pelo selo/badge
+            # 3. VARREDURA MULTI-LOJAS: lê SEMPRE o chat já aberto na tela + todas as conversas não lidas válidas
+            chats_lidos_no_ciclo = set()
+
+            # 3A. Se já houver uma conversa aberta na tela (#main), lê ela imediatamente
+            chat_aberto = self._obter_chat_aberto_atual()
+            if chat_aberto:
+                if self._chat_esta_ignorado(chat_aberto):
+                    print(f"[WhatsApp] 🚫 Chat aberto '{chat_aberto}' está na lista de ignorados. Pulando...")
+                else:
+                    novas, ids = self._extrair_notas_do_chat_aberto(chat_aberto, checkpoint)
+                    todas_novas_notas.extend(novas)
+                    todos_novos_ids.extend(ids)
+                    chats_lidos_no_ciclo.add(chat_aberto.lower())
+
+            # 3B. Detecta outras conversas com selo de mensagem não lida
             seletor_badges_nao_lidos = (
                 "#pane-side span[aria-label*='não lida'], "
                 "#pane-side span[aria-label*='não lidas'], "
@@ -382,8 +412,6 @@ class WhatsAppMonitor:
             total_badges = badges_nao_lidos.count()
 
             if total_badges > 0:
-                print(f"[WhatsApp Multi-Lojas] Encontrada(s) {total_badges} conversa(s) com novas mensagens!")
-
                 # Lê os títulos dos chats não lidos na barra lateral antes de clicar (para não abrir chats ignorados)
                 nomes_nao_lidos: List[str] = []
                 try:
@@ -417,6 +445,9 @@ class WhatsAppMonitor:
                                 print(f"[WhatsApp] 🚫 Grupo/Chat '{nome_loja}' ignorado conforme filtro (sem abrir).")
                                 continue
 
+                            if nome_loja.lower() in chats_lidos_no_ciclo:
+                                continue
+
                             chat_row = self.page.locator("#pane-side span[title]").filter(has_text=nome_loja).first
                             if chat_row.count() == 0:
                                 continue
@@ -428,6 +459,7 @@ class WhatsAppMonitor:
                             novas, ids = self._extrair_notas_do_chat_aberto(nome_loja, checkpoint)
                             todas_novas_notas.extend(novas)
                             todos_novos_ids.extend(ids)
+                            chats_lidos_no_ciclo.add(nome_loja.lower())
                         except Exception as err_chat:
                             print(f"[WhatsApp] Aviso ao processar conversa '{nome_loja}': {err_chat}")
                             continue
@@ -444,29 +476,27 @@ class WhatsAppMonitor:
                             badge_alvo.click()
                             time.sleep(1.2)
 
-                            header_span = self.page.locator(
-                                "#main header span[title], #main header div[role='button'] span[dir='auto'], #main header span[dir='auto']"
-                            )
-                            nome_loja = "Loja_WhatsApp"
-                            if header_span.count() > 0:
-                                txt = header_span.first.inner_text().strip()
-                                if txt:
-                                    nome_loja = txt
+                            nome_loja = self._obter_chat_aberto_atual() or "Loja_WhatsApp"
 
                             if self._chat_esta_ignorado(nome_loja):
                                 print(f"[WhatsApp] 🚫 Chat '{nome_loja}' está na lista de ignorados. Pulando...")
+                                continue
+
+                            if nome_loja.lower() in chats_lidos_no_ciclo:
                                 continue
 
                             print(f"[WhatsApp Multi-Lojas] Abrindo conversa de: {nome_loja}...")
                             novas, ids = self._extrair_notas_do_chat_aberto(nome_loja, checkpoint)
                             todas_novas_notas.extend(novas)
                             todos_novos_ids.extend(ids)
+                            chats_lidos_no_ciclo.add(nome_loja.lower())
 
                         except Exception as err_chat:
                             print(f"[WhatsApp] Aviso ao processar conversa não lida: {err_chat}")
                             continue
-            else:
-                # Se não havia nenhuma conversa com bolinha verde, lê a conversa que já está aberta ou a do topo
+
+            # 3C. Se nenhum chat válido estava aberto e nenhum badge válido foi lido, abre o primeiro chat válido
+            if not chats_lidos_no_ciclo and not chat_aberto:
                 nome_contato = self.selecionar_chat_alvo()
                 novas, ids = self._extrair_notas_do_chat_aberto(nome_contato, checkpoint)
                 todas_novas_notas.extend(novas)
