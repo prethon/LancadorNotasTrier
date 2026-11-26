@@ -54,10 +54,10 @@ def exibir_estatisticas() -> None:
     print("-" * 40 + "\n")
 
 
-def etapa_capturar_whatsapp(chats_ignorar: str = None, headless: bool = None) -> int:
+def etapa_capturar_whatsapp(chats_ignorar: str = None, headless: bool = None, chat_alvo: str = None) -> int:
     """Executa a leitura das mensagens do WhatsApp Web e enfileira novas notas."""
     print("\n>>> ETAPA 1: Captura de Notas no WhatsApp Web")
-    with WhatsAppMonitor(headless=headless, chats_ignorar=chats_ignorar) as monitor:
+    with WhatsAppMonitor(headless=headless, chats_ignorar=chats_ignorar, chat_alvo=chat_alvo) as monitor:
         sucesso = monitor.abrir_e_garantir_login()
         if not sucesso:
             print("[WhatsApp] Não foi possível autenticar a sessão do WhatsApp. Pulando etapa.")

@@ -18,6 +18,7 @@ from src.config import (
     ERP_USUARIO,
     ERP_SENHA,
     WHATSAPP_ALERTA,
+    WHATSAPP_CHAT_ALVO,
     WHATSAPP_IGNORAR,
     salvar_env,
 )
@@ -77,6 +78,7 @@ class App(tk.Tk):
 
         # Variável para Notificações e Exclusões no WhatsApp
         self.var_whatsapp_alerta = tk.StringVar(value=WHATSAPP_ALERTA)
+        self.var_whatsapp_chat = tk.StringVar(value=WHATSAPP_CHAT_ALVO)
         self.var_whatsapp_ignorar = tk.StringVar(value=WHATSAPP_IGNORAR)
 
         # Variável para Teste Individual de Nota
@@ -174,16 +176,21 @@ class App(tk.Tk):
         ent_zap_alerta.pack(side=tk.LEFT, padx=(0, 8))
         ttk.Label(frame_cred, text="(Ex: 5511999998888 ou Nome Contato)", font=("Arial", 8, "italic"), foreground="#666").pack(side=tk.LEFT)
 
-        # Linha 3: Grupos/Chats ignorados na leitura do WhatsApp
+        # Linha 3: Grupo Exclusivo e Grupos/Chats ignorados na leitura do WhatsApp
         frame_ignorar = ttk.Frame(frame_erp)
         frame_ignorar.pack(fill=tk.X, pady=(4, 0))
-        ttk.Label(frame_ignorar, text="🚫 Ignorar Grupos:", width=15).pack(side=tk.LEFT)
+        ttk.Label(frame_ignorar, text="👥 Grupo Exclusivo:", width=15).pack(side=tk.LEFT)
+        ent_zap_grupo = ttk.Entry(frame_ignorar, textvariable=self.var_whatsapp_chat, width=22, font=("Menlo", 9))
+        ent_zap_grupo.pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Label(frame_ignorar, text="(Vazio = todas conversas)", font=("Arial", 8, "italic"), foreground="#666").pack(side=tk.LEFT, padx=(0, 12))
+
+        ttk.Label(frame_ignorar, text="🚫 Ignorar Grupos:").pack(side=tk.LEFT, padx=(0, 4))
         ent_zap_ignorar = ttk.Entry(frame_ignorar, textvariable=self.var_whatsapp_ignorar, font=("Menlo", 9))
         ent_zap_ignorar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
-        ttk.Label(frame_ignorar, text="(Separe por vírgula. Ex: Grupo Família, Avisos)", font=("Arial", 8, "italic"), foreground="#666").pack(side=tk.LEFT)
+        ttk.Label(frame_ignorar, text="(Vírgula)", font=("Arial", 8, "italic"), foreground="#666").pack(side=tk.LEFT)
 
         # Salvar automaticamente ao sair de qualquer campo de credencial/configuração
-        for widget in (ent_url, ent_user, self.ent_pass, ent_zap_alerta, ent_zap_ignorar):
+        for widget in (ent_url, ent_user, self.ent_pass, ent_zap_alerta, ent_zap_grupo, ent_zap_ignorar):
             widget.bind("<FocusOut>", lambda _e: self._salvar_configuracoes_interface())
 
         # 3. Controles de Execução Geral & Teste de Nota
@@ -681,7 +688,12 @@ class App(tk.Tk):
 
             with sync_playwright() as p:
                 # 1. Abre o WhatsApp uma única vez e mantém ativo na tela
-                with WhatsAppMonitor(headless=headless, playwright_instance=p, chats_ignorar=self.var_whatsapp_ignorar.get().strip()) as zap:
+                with WhatsAppMonitor(
+                    headless=headless,
+                    playwright_instance=p,
+                    chats_ignorar=self.var_whatsapp_ignorar.get().strip(),
+                    chat_alvo=self.var_whatsapp_chat.get().strip(),
+                ) as zap:
                     if not zap.abrir_e_garantir_login():
                         print("[Painel] Não foi possível autenticar o WhatsApp Web. Abortando.")
                         return
@@ -700,8 +712,9 @@ class App(tk.Tk):
 
                         while not self.evento_parar.is_set():
                             try:
-                                # Atualiza lista de ignorados caso o usuário tenha alterado na interface
+                                # Atualiza filtros caso o usuário tenha alterado na interface
                                 zap.chats_ignorar = self.var_whatsapp_ignorar.get().strip()
+                                zap.chat_alvo = self.var_whatsapp_chat.get().strip()
 
                                 # Auto-recuperação do ERP caso a sessão tenha expirado ou a rede tenha voltado
                                 erp_pronto = erp.verificar_ou_recuperar_sessao()
@@ -764,7 +777,12 @@ class App(tk.Tk):
         def ciclo():
             print(f"[Painel] Executando ciclo único na Central: {url}...")
             with sync_playwright() as p:
-                with WhatsAppMonitor(headless=headless, playwright_instance=p, chats_ignorar=self.var_whatsapp_ignorar.get().strip()) as zap:
+                with WhatsAppMonitor(
+                    headless=headless,
+                    playwright_instance=p,
+                    chats_ignorar=self.var_whatsapp_ignorar.get().strip(),
+                    chat_alvo=self.var_whatsapp_chat.get().strip(),
+                ) as zap:
                     if not zap.abrir_e_garantir_login():
                         return
                     zap.ler_mensagens_e_enfileirar()
@@ -790,11 +808,12 @@ class App(tk.Tk):
     def _executar_apenas_zap(self):
         self._salvar_configuracoes_interface()
         ignorar = self.var_whatsapp_ignorar.get().strip()
+        chat_alvo = self.var_whatsapp_chat.get().strip()
         headless = not self.var_modo_teste.get()
 
         def zap():
             print("[Painel] Verificando novas mensagens no WhatsApp Web...")
-            etapa_capturar_whatsapp(chats_ignorar=ignorar, headless=headless)
+            etapa_capturar_whatsapp(chats_ignorar=ignorar, headless=headless, chat_alvo=chat_alvo)
             print("[Painel] Verificação do WhatsApp concluída.")
 
         self._iniciar_tarefa(zap, "Lendo WhatsApp...")
@@ -903,6 +922,7 @@ class App(tk.Tk):
                 "ERP_USUARIO": self.var_erp_usuario.get().strip(),
                 "ERP_SENHA": self.var_erp_senha.get().strip(),
                 "WHATSAPP_ALERTA": self.var_whatsapp_alerta.get().strip(),
+                "WHATSAPP_CHAT_ALVO": self.var_whatsapp_chat.get().strip(),
                 "WHATSAPP_IGNORAR": self.var_whatsapp_ignorar.get().strip(),
                 "MODO_TESTE": "true" if self.var_modo_teste.get() else "false",
             }

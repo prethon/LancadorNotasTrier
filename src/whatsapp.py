@@ -25,6 +25,7 @@ class WhatsAppMonitor:
         headless: Optional[bool] = None,
         playwright_instance=None,
         chats_ignorar: Optional[str] = None,
+        chat_alvo: Optional[str] = None,
     ):
         if headless is None:
             self.headless = not MODO_TESTE
@@ -34,6 +35,7 @@ class WhatsAppMonitor:
         self._external_playwright = playwright_instance is not None
         self._playwright = playwright_instance
         self.chats_ignorar = WHATSAPP_IGNORAR if chats_ignorar is None else chats_ignorar
+        self.chat_alvo = WHATSAPP_CHAT_ALVO if chat_alvo is None else chat_alvo.strip()
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
 
@@ -193,9 +195,13 @@ class WhatsAppMonitor:
         a conversa mais recente (não ignorada) caso nenhuma esteja aberta.
         """
         self._fechar_modais_whatsapp()
-        chat_a_buscar = nome_chat or WHATSAPP_CHAT_ALVO
+        chat_a_buscar = (nome_chat if nome_chat is not None else self.chat_alvo or "").strip()
 
         if chat_a_buscar:
+            chat_aberto = self._obter_chat_aberto_atual() or ""
+            if self._chat_corresponde_destino(chat_aberto, chat_a_buscar):
+                return chat_aberto
+
             print(f"[WhatsApp] Buscando pelo chat específico: '{chat_a_buscar}'...")
             campo_busca = self.page.locator("div[contenteditable='true'][data-tab='3'], div[aria-label='Pesquisar texto da caixa']")
             if campo_busca.count() > 0:
@@ -438,10 +444,11 @@ class WhatsAppMonitor:
         """
         self._fechar_modais_whatsapp()
         checkpoint = self._carregar_dados_checkpoint()
+        alvo_fixo = (self.chat_alvo or "").strip()
 
         # 1. Se for a primeira execução (ou após zerar checkpoint), define o marco zero em 100% das mensagens atuais
         if not checkpoint:
-            nome_contato = self.selecionar_chat_alvo()
+            nome_contato = self.selecionar_chat_alvo(alvo_fixo if alvo_fixo else None)
             locators = self.page.locator("#main div[data-pre-plain-text]")
             if locators.count() == 0:
                 locators = self.page.locator("#main div.message-in, #main div.message-out")
@@ -465,9 +472,9 @@ class WhatsAppMonitor:
         todas_novas_notas: List[str] = []
         todos_novos_ids: List[str] = []
 
-        # 2. Se houver um chat alvo fixo no .env, foca nele
-        if WHATSAPP_CHAT_ALVO:
-            nome_contato = self.selecionar_chat_alvo(WHATSAPP_CHAT_ALVO)
+        # 2. Se houver um Grupo Exclusivo (chat alvo fixo), foca exclusivamente nele
+        if alvo_fixo:
+            nome_contato = self.selecionar_chat_alvo(alvo_fixo)
             novas, ids = self._extrair_notas_do_chat_aberto(nome_contato, checkpoint)
             todas_novas_notas.extend(novas)
             todos_novos_ids.extend(ids)
@@ -612,14 +619,13 @@ class WhatsAppMonitor:
         Se origem_contato for informada, abre a conversa da loja antes de reagir.
         """
         try:
-            if origem_contato and origem_contato not in ("Chat_Ativo", "Loja_WhatsApp"):
-                # Só pesquisa se o chat atual aberto ainda não for o da origem
-                header_title = self.page.locator(
-                    "#main header span[title], #main header div[role='button'] span[dir='auto'], #main header span[dir='auto']"
-                )
-                chat_atual = header_title.first.inner_text().strip() if header_title.count() > 0 else ""
-                if origem_contato.lower() not in chat_atual.lower():
-                    self.selecionar_chat_alvo(origem_contato)
+            alvo_fixo = (self.chat_alvo or "").strip()
+            destino_reacao = alvo_fixo if alvo_fixo else origem_contato
+            if destino_reacao and destino_reacao not in ("Chat_Ativo", "Loja_WhatsApp"):
+                # Só pesquisa se o chat atual aberto ainda não for o do grupo/origem
+                chat_atual = self._obter_chat_aberto_atual() or ""
+                if not self._chat_corresponde_destino(chat_atual, destino_reacao):
+                    self.selecionar_chat_alvo(destino_reacao)
                     time.sleep(1)
 
             print(f"[WhatsApp] Procurando mensagem da NF {numero_nota} para reagir com 👍...")
