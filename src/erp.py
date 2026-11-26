@@ -103,11 +103,18 @@ class ERPLancador:
             # 1. Se foi deslogado (voltou para login.pod ou tela de login inicial visível)
             precisa_login = (
                 "login.pod" in url_atual
-                or self.page.get_by_role("textbox", name="Usuário").count() > 0
+                or self.page.get_by_role("textbox", name="Usuário", exact=True).count() > 0
             )
             if precisa_login:
-                print("[ERP - Auto-Recuperação] 🔄 Sessão expirada detectada! Reconectando ao ERP automaticamente...")
-                return self.login_e_navegar_para_entrada()
+                # Confirma se já não está dentro do módulo Rec_1020 antes de forçar login
+                texto_rapido = ""
+                try:
+                    texto_rapido = self.page.inner_text("body").upper()
+                except Exception:
+                    pass
+                if "NÃO IMPORTADAS" not in texto_rapido and "IMPORTAR [F2]" not in texto_rapido:
+                    print("[ERP - Auto-Recuperação] 🔄 Sessão expirada detectada! Reconectando ao ERP automaticamente...")
+                    return self.login_e_navegar_para_entrada()
 
             # 2. Se a segunda tela de senha (Usuário*) estiver visível, confirma ela
             campo_usuario_sec = self.page.get_by_role("textbox", name="Usuário*")
@@ -376,16 +383,16 @@ class ERPLancador:
         self.verificar_ou_recuperar_sessao()
 
         try:
-            # 0. Limpa filtros/notas anteriores clicando em Limpar [F5]
+            # 0. Garante que não há modal/iframe residual aberto e limpa filtros anteriores
+            if self.page.locator("div.modal_container, iframe").count() > 0:
+                self._fechar_iframe_ou_sair()
             self._limpar_filtros_tela()
 
             # 1. Garantir filtro 'Não Importadas'
             self._selecionar_filtro("Não Importadas")
 
             # 2. Filtros Avançados (só clica se o campo de nota ainda não estiver visível)
-            campo_nota = self.page.get_by_role("textbox", name="Número nota fiscal")
-            if campo_nota.count() == 0:
-                campo_nota = self.page.locator("input[name*='nota'], input[id*='nota']")
+            campo_nota = self._obter_campo_nota()
 
             precisa_abrir_filtros = (campo_nota.count() == 0)
             if not precisa_abrir_filtros:
@@ -401,9 +408,7 @@ class ERPLancador:
                     time.sleep(0.5)
 
             # 3. Número da nota
-            campo_nota = self.page.get_by_role("textbox", name="Número nota fiscal")
-            if campo_nota.count() == 0:
-                campo_nota = self.page.locator("input[name*='nota'], input[id*='nota']")
+            campo_nota = self._obter_campo_nota()
 
             num_str = str(numero_nota).strip()
             campo_nota.first.click()
@@ -462,7 +467,12 @@ class ERPLancador:
             # 6. Importar [F2]
             print("[ERP] Clicando em Importar [F2]...")
             self.page.get_by_role("button", name="Importar [F2]").first.click()
-            time.sleep(3)
+
+            # Aguarda até 5s pelo carregamento do iframe interno
+            for _ in range(10):
+                if self.page.locator("iframe").count() > 0:
+                    break
+                time.sleep(0.5)
 
             # 7. Tratar quadro interno (iframe)
             if self.page.locator("iframe").count() > 0:
@@ -493,37 +503,33 @@ class ERPLancador:
 
             texto_completo = f"{texto_tela}\n{texto_iframe}".upper()
 
-            # 1. Verifica indicadores de sucesso explícito na tela de resumo
-            indicadores_sucesso = [
-                "NOTAS IMPORTADAS 1",
-                "NOTAS IMPORTADAS: 1",
-                "TOTAL DE NOTAS IMPORTADAS: 1",
-                "TOTAL IMPORTADAS: 1",
-                "IMPORTADAS 1",
-            ]
-            importacao_confirmada = any(s in texto_completo for s in indicadores_sucesso)
+            # 1. Verifica indicadores de sucesso explícito na tela de resumo (usando regex para tab/quebra de linha)
+            importacao_confirmada = bool(
+                re.search(r"NOTAS\s+IMPORTADAS\s*:?\s*[1-9]\d*\b", texto_completo)
+                or re.search(r"TOTAL\s+(?:DE\s+)?(?:NOTAS\s+)?IMPORTADAS\s*:?\s*[1-9]\d*\b", texto_completo)
+            )
 
-            # 2. Frases específicas de erro que só existem quando a importação foi abortada por falta de cadastro
+            # 2. Frases reais de erro (NÃO usar "IMPORTAÇÃO ABORTADA", pois ela aparece na legenda fixa da tela!)
             frases_erro_especificas = [
                 "NÃO PODE SER ENCONTRADO NO CADASTRO DE PRODUTOS",
                 "NAO PODE SER ENCONTRADO NO CADASTRO DE PRODUTOS",
-                "IMPORTAÇÃO ABORTADA",
-                "IMPORTACAO ABORTADA",
+                "NÃO ENCONTRADO NO CADASTRO DE PRODUTOS",
+                "NAO ENCONTRADO NO CADASTRO DE PRODUTOS",
             ]
 
-            # Rejeição confirmada no resumo (0 importadas E 1 não importada)
-            resumo_rejeitou = (
-                ("NOTAS NÃO IMPORTADAS 1" in texto_completo or "NOTAS NAO IMPORTADAS 1" in texto_completo)
-                and ("NOTAS IMPORTADAS 0" in texto_completo or "NOTAS IMPORTADAS: 0" in texto_completo)
+            # Rejeição confirmada no resumo (0 importadas E >=1 não importadas)
+            resumo_rejeitou = bool(
+                re.search(r"NOTAS\s+N[ÃA]O\s+IMPORTADAS\s*:?\s*[1-9]\d*\b", texto_completo)
+                and re.search(r"NOTAS\s+IMPORTADAS\s*:?\s*0\b", texto_completo)
             )
 
-            # Só classifica como produto sem cadastro se houver erro explícito E a importação não tiver sido confirmada
+            # Só classifica como produto sem cadastro se houver erro real E a importação não tiver sido confirmada
             if (any(ind in texto_completo for ind in frases_erro_especificas) or resumo_rejeitou) and not importacao_confirmada:
                 detalhe = "Produtos não encontrados no cadastro do ERP (Importação Abortada)"
                 match_obs = re.search(r"(NOTA \d+\s*:\s*O ITEM [^\n\r]+)", texto_completo)
                 if match_obs:
                     detalhe = match_obs.group(1).strip()
-                elif "NÃO PODE SER ENCONTRADO NO CADASTRO DE PRODUTOS" in texto_completo:
+                elif "CADASTRO DE PRODUTOS" in texto_completo:
                     detalhe = "Existem itens que não foram encontrados no cadastro de produtos."
 
                 print(f"[ERP - Identificado] {detalhe}")
@@ -555,6 +561,18 @@ class ERPLancador:
         finally:
             self._limpar_filtros_tela()
 
+    def _obter_campo_nota(self):
+        """Localiza exclusivamente o campo de texto 'Número nota fiscal' (ignorando botões)."""
+        campo = self.page.get_by_role("textbox", name="Número nota fiscal")
+        if campo.count() > 0:
+            return campo
+        campo = self.page.locator("input[placeholder*='Número nota fiscal']")
+        if campo.count() > 0:
+            return campo
+        return self.page.locator(
+            "input[type='text'][name*='nota'], input[type='text'][id*='nota']"
+        )
+
     def _limpar_filtros_tela(self) -> None:
         """Clica no botão 'Limpar [F5]' na tela Rec_1020 para não acumular notas na caixa de filtro."""
         try:
@@ -568,21 +586,94 @@ class ERPLancador:
             pass
 
     def _fechar_iframe_ou_sair(self) -> None:
+        """Fecha qualquer modal/iframe aberto (Sair, Fechar, Voltar, X ou Esc)."""
         try:
-            if self.page.locator("iframe").count() > 0:
+            seletores_fechar = (
+                "button:has-text('Sair'), input[type='button'][value*='Sair'], "
+                "button:has-text('Fechar'), input[type='button'][value*='Fechar'], "
+                "button:has-text('Voltar'), input[type='button'][value*='Voltar'], "
+                "button:has-text('Cancelar'), input[type='button'][value*='Cancelar'], "
+                "button:has-text('OK'), input[type='button'][value='OK']"
+            )
+
+            # 1. Tenta fechar por dentro de todos os iframes abertos (rolando até o rodapé primeiro)
+            total_iframes = self.page.locator("iframe").count()
+            for idx in range(total_iframes - 1, -1, -1):
                 try:
-                    frame = self.page.frame_locator("iframe").first
-                    btn_sair_frame = frame.get_by_role("button", name="Sair [Esc]")
-                    if btn_sair_frame.count() > 0:
-                        btn_sair_frame.click(timeout=3000)
-                        time.sleep(1)
+                    frame = self.page.frame_locator("iframe").nth(idx)
+                    try:
+                        frame.locator("body").evaluate("el => window.scrollTo(0, document.body.scrollHeight)")
+                    except Exception:
+                        pass
+
+                    btn_frame = frame.locator(seletores_fechar)
+                    if btn_frame.count() > 0:
+                        alvo_btn = btn_frame.last
+                        alvo_btn.scroll_into_view_if_needed()
+                        alvo_btn.click(timeout=3000)
+                        time.sleep(0.8)
+
+                    # Se o modal ainda estiver aberto, tenta Escape diretamente dentro do iframe
+                    if self.page.locator("div.modal_container, iframe").count() > 0:
+                        try:
+                            frame.locator("body").press("Escape")
+                            time.sleep(0.6)
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
-            btn_sair = self.page.get_by_role("button", name="Sair [Esc]")
-            if btn_sair.count() > 0:
-                btn_sair.first.click(timeout=3000)
-                time.sleep(1)
+            # 2. Tenta fechar pelo botão do container do modal (ex: X ou fechar)
+            if self.page.locator("div.modal_container, iframe").count() > 0:
+                try:
+                    btn_modal = self.page.locator(
+                        "div.modal_container button:has-text('Sair'), div.modal_container button:has-text('Fechar'), "
+                        "div.modal_container input[value*='Sair'], div.modal_container input[value*='Fechar'], "
+                        "div.modal_container .modal_close, div.modal_container a[title*='Fechar'], "
+                        "div.modal_container span[title*='Fechar']"
+                    )
+                    if btn_modal.count() > 0:
+                        btn_modal.last.scroll_into_view_if_needed()
+                        btn_modal.last.click(timeout=3000)
+                        time.sleep(0.8)
+                except Exception:
+                    pass
+
+            # 3. Tenta botão 'Sair [Esc]' na própria página
+            if self.page.locator("div.modal_container, iframe").count() > 0 or self.page.get_by_role("button", name="Sair [Esc]").count() > 0:
+                try:
+                    btn_sair = self.page.get_by_role("button", name="Sair [Esc]")
+                    if btn_sair.count() > 0 and btn_sair.first.is_visible():
+                        btn_sair.first.click(timeout=3000)
+                        time.sleep(0.8)
+                except Exception:
+                    pass
+
+            # 4. Último recurso: tecla Escape na página ou fechar overlay modal_container se travado
+            if self.page.locator("div.modal_container, iframe").count() > 0:
+                self.page.keyboard.press("Escape")
+                time.sleep(0.6)
+
+            if self.page.locator("div.modal_container").count() > 0:
+                try:
+                    botoes_debug = self.page.evaluate("""() => {
+                        const res = [];
+                        document.querySelectorAll('iframe').forEach(ifr => {
+                            try {
+                                const doc = ifr.contentDocument;
+                                if (doc) {
+                                    doc.querySelectorAll('button, input[type=button], input[type=submit]').forEach(b => {
+                                        res.push((b.innerText || b.value || '').trim());
+                                    });
+                                }
+                            } catch (e) {}
+                        });
+                        return res.filter(Boolean);
+                    }""")
+                    if botoes_debug:
+                        print(f"[ERP - Aviso] Modal ainda aberto. Botões encontrados no iframe: {botoes_debug}")
+                except Exception:
+                    pass
         except Exception:
             pass
 

@@ -334,29 +334,28 @@ class WhatsAppMonitor:
         self._fechar_modais_whatsapp()
         checkpoint = self._carregar_dados_checkpoint()
 
-        # 1. Se for a primeira execução de todas, define o marco zero mas PRESERVA as últimas 5 mensagens
+        # 1. Se for a primeira execução (ou após zerar checkpoint), define o marco zero em 100% das mensagens atuais
         if not checkpoint:
             nome_contato = self.selecionar_chat_alvo()
-            locators = self.page.locator(
-                "#main div[data-pre-plain-text], #main div.message-in, #main div.message-out, div.message-in, div.message-out"
-            )
+            locators = self.page.locator("#main div[data-pre-plain-text]")
+            if locators.count() == 0:
+                locators = self.page.locator("#main div.message-in, #main div.message-out")
             total_locs = locators.count()
             ids_iniciais = []
             for i in range(total_locs):
                 ids_iniciais.append(self._gerar_id_mensagem(locators.nth(i)))
 
-            # Deixa as últimas 5 mensagens fora do histórico inicial para capturar notas recém-enviadas
-            limite_antigo = max(0, len(ids_iniciais) - 5)
-            ids_historico = ids_iniciais[:limite_antigo]
+            # Salva TODAS as mensagens visíveis atualmente para não ler notas antigas após zerar checkpoint
+            ids_historico = ids_iniciais
             ultimo_id = ids_iniciais[-1] if ids_iniciais else ""
 
             checkpoint = {
                 "criado_em": time.time(),
                 "ultimo_id_processado": ultimo_id,
-                "ids_processados": ids_historico,
+                "ids_processados": ids_historico[-500:],
             }
             self._salvar_dados_checkpoint(checkpoint)
-            print("[WhatsApp] 🚀 Marco zero inicial definido! Mensagens recentes mantidas para leitura imediata.")
+            print("[WhatsApp] 🚀 Marco zero definido! Mensagens anteriores ignoradas; monitorando apenas novas mensagens.")
 
         todas_novas_notas: List[str] = []
         todos_novos_ids: List[str] = []
@@ -495,37 +494,132 @@ class WhatsAppMonitor:
         """
         try:
             if origem_contato and origem_contato not in ("Chat_Ativo", "Loja_WhatsApp"):
-                self.selecionar_chat_alvo(origem_contato)
-                time.sleep(1)
+                # Só pesquisa se o chat atual aberto ainda não for o da origem
+                header_title = self.page.locator(
+                    "#main header span[title], #main header div[role='button'] span[dir='auto'], #main header span[dir='auto']"
+                )
+                chat_atual = header_title.first.inner_text().strip() if header_title.count() > 0 else ""
+                if origem_contato.lower() not in chat_atual.lower():
+                    self.selecionar_chat_alvo(origem_contato)
+                    time.sleep(1)
 
             print(f"[WhatsApp] Procurando mensagem da NF {numero_nota} para reagir com ✅...")
             bolhas = self.page.locator(
-                f"#main div[data-pre-plain-text]:has-text('{numero_nota}'), "
+                f"#main div[data-id]:has-text('{numero_nota}'), "
                 f"#main div.message-in:has-text('{numero_nota}'), "
-                f"#main div.message-out:has-text('{numero_nota}'), "
-                f"#main div[data-testid='msg-container']:has-text('{numero_nota}'), "
-                f"div.message-in:has-text('{numero_nota}')"
+                f"#main div.message-out:has-text('{numero_nota}')"
             )
             if bolhas.count() == 0:
+                print(f"[WhatsApp] Aviso: mensagem da NF {numero_nota} não encontrada no chat aberto para reagir.")
                 return False
 
             alvo = bolhas.last
-            alvo.hover()
-            time.sleep(0.5)
+            alvo.scroll_into_view_if_needed()
+            time.sleep(0.3)
 
-            btn_react = alvo.locator("button[aria-label='Reagir'], span[data-icon='react']")
-            if btn_react.count() == 0:
-                btn_react = self.page.locator("span[data-icon='react'], [data-testid='reaction-button']")
+            # Tenta hover no balão interno (e depois no container) para exibir o botão Reagir
+            bolha_interna = alvo.locator("div[data-pre-plain-text], span.selectable-text").first
+            if bolha_interna.count() > 0:
+                bolha_interna.hover()
+            else:
+                alvo.hover()
+            time.sleep(0.6)
 
-            if btn_react.count() > 0:
-                btn_react.first.click()
-                time.sleep(0.5)
-                emoji_check = self.page.locator("button[aria-label*='marcado'], button[aria-label*='positivo'], [data-emoji='✅'], [data-emoji='👍']")
-                if emoji_check.count() > 0:
-                    emoji_check.first.click()
-                    print(f"[WhatsApp] ✅ Reação adicionada com sucesso na mensagem da NF {numero_nota}!")
-                    return True
+            seletores_react = (
+                "button[aria-label*='Reagir'], div[aria-label*='Reagir'], "
+                "button[aria-label*='React'], div[aria-label*='React'], "
+                "[data-testid='reaction-button'], span[data-icon='react'], span[data-icon='smiley']"
+            )
+            btn_react = alvo.locator(seletores_react)
+            abriu_menu = False
 
+            if btn_react.count() > 0 and btn_react.first.is_visible():
+                btn_react.first.click(timeout=5000)
+                time.sleep(0.6)
+                abriu_menu = True
+            else:
+                # Plano B: clique com botão direito no balão -> "Reagir"
+                try:
+                    alvo_ctx = bolha_interna if bolha_interna.count() > 0 else alvo
+                    alvo_ctx.click(button="right", timeout=5000)
+                    time.sleep(0.5)
+                    item_reagir = self.page.locator(
+                        "[role='menuitem']:has-text('Reagir'), div[aria-label='Reagir'], li:has-text('Reagir')"
+                    )
+                    if item_reagir.count() > 0 and item_reagir.first.is_visible():
+                        item_reagir.first.click(timeout=5000)
+                        time.sleep(0.6)
+                        abriu_menu = True
+                    else:
+                        self.page.keyboard.press("Escape")
+                except Exception:
+                    pass
+
+            if not abriu_menu:
+                print(f"[WhatsApp] Aviso: botão 'Reagir' não apareceu para a NF {numero_nota}.")
+                return False
+
+            # 1. Tenta clicar direto no ✅ caso já esteja nos emojis rápidos/recentes (.last = popup recém-aberto)
+            seletor_check = (
+                "[data-emoji='✅'], [aria-label*='✅'], img[alt='✅'], "
+                "[aria-label*='Marca de seleção'], [aria-label*='marca de seleção']"
+            )
+            emoji_check = self.page.locator(seletor_check)
+            if emoji_check.count() > 0 and emoji_check.last.is_visible():
+                emoji_check.last.click(timeout=5000)
+                print(f"[WhatsApp] ✅ Reação adicionada com sucesso na mensagem da NF {numero_nota}!")
+                return True
+
+            # 2. Abre o seletor completo '+' ('Mais reações' / 'Mais emojis') para escolher ✅
+            btn_mais = self.page.locator(
+                "[aria-label*='Mais reaç'], [aria-label*='Mais emoji'], "
+                "[aria-label*='More reaction'], [data-icon*='plus']"
+            )
+            if btn_mais.count() > 0 and btn_mais.last.is_visible():
+                btn_mais.last.click(timeout=5000)
+                time.sleep(0.6)
+
+                campo_busca_emoji = self.page.locator(
+                    "input[placeholder*='Pesquisar'], input[aria-label*='Pesquisar'], "
+                    "div[contenteditable='true'][aria-label*='Pesquisar'], input[placeholder*='Search']"
+                )
+                for termo_busca in ("marca", "check"):
+                    if campo_busca_emoji.count() > 0:
+                        campo_busca_emoji.last.click(timeout=3000)
+                        campo_busca_emoji.last.fill(termo_busca)
+                        time.sleep(0.6)
+
+                    emoji_check = self.page.locator(seletor_check)
+                    if emoji_check.count() > 0 and emoji_check.last.is_visible():
+                        emoji_check.last.click(timeout=5000)
+                        print(f"[WhatsApp] ✅ Reação adicionada com sucesso na mensagem da NF {numero_nota}!")
+                        return True
+
+            # 3. Fallback para 👍 da barra rápida
+            emoji_joinha = self.page.locator(
+                "[data-emoji='👍'], [aria-label*='👍'], img[alt='👍'], "
+                "[aria-label*='polegar'], [aria-label*='Reagir com']"
+            )
+            if emoji_joinha.count() > 0 and emoji_joinha.last.is_visible():
+                emoji_joinha.last.click(timeout=5000)
+                print(f"[WhatsApp] 👍 Reação adicionada na mensagem da NF {numero_nota}!")
+                return True
+
+            # Diagnóstico real nos últimos elementos flutuantes do DOM (sem depender de role='dialog')
+            labels_debug = []
+            try:
+                labels_debug = self.page.evaluate("""() => {
+                    const els = document.querySelectorAll(
+                        "[role='menu'] [aria-label], [role='application'] [aria-label], " +
+                        "div[tabindex='-1'] [aria-label], body > div:last-child [aria-label], " +
+                        "body > div:last-child img[alt]"
+                    );
+                    return Array.from(els).slice(-12).map(el => el.getAttribute("aria-label") || el.getAttribute("alt") || "").filter(Boolean);
+                }""")
+            except Exception:
+                pass
+            print(f"[WhatsApp] Aviso: menu de reação abriu, mas o emoji ✅ não foi localizado para a NF {numero_nota}. Opções vistas: {labels_debug}")
+            self.page.keyboard.press("Escape")
             return False
         except Exception as e:
             print(f"[WhatsApp] Aviso ao reagir à mensagem da NF {numero_nota}: {e}")
