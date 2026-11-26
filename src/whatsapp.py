@@ -218,6 +218,17 @@ class WhatsAppMonitor:
         texto = elemento.inner_text().strip()
         return f"{pre_text}_{texto}"
 
+    def _eh_mensagem_alerta_bot(self, texto: str) -> bool:
+        """Identifica mensagens de alerta enviadas pelo próprio robô para evitar loop."""
+        texto_low = (texto or "").lower()
+        assinaturas_alerta = (
+            "alerta nota inexistente",
+            "alerta lançador de notas",
+            "alerta boleto divergente",
+            "alerta de boleto divergente",
+        )
+        return any(assinatura in texto_low for assinatura in assinaturas_alerta)
+
     def _extrair_notas_do_chat_aberto(self, nome_contato: str, checkpoint: Dict[str, Any]) -> Tuple[List[str], List[str]]:
         """Lê os balões da conversa atualmente aberta no #main e enfileira novas notas."""
         if self._chat_esta_ignorado(nome_contato):
@@ -225,11 +236,10 @@ class WhatsAppMonitor:
             return [], []
 
         time.sleep(1)
-        # Seletores abrangentes para cobrir versões recentes do WhatsApp Web
-        locators_mensagens = self.page.locator(
-            "#main div[data-pre-plain-text], #main div.message-in, #main div.message-out, "
-            "#main div[data-testid='msg-container'], div[data-pre-plain-text], div.message-in, div.message-out"
-        )
+        # Usa preferencialmente div[data-pre-plain-text] para evitar ler o mesmo balão 2 vezes
+        locators_mensagens = self.page.locator("#main div[data-pre-plain-text]")
+        if locators_mensagens.count() == 0:
+            locators_mensagens = self.page.locator("#main div.message-in, #main div.message-out")
         total_elementos = locators_mensagens.count()
 
         if total_elementos == 0:
@@ -248,7 +258,7 @@ class WhatsAppMonitor:
                 elemento = locators_mensagens.nth(i)
                 msg_id = self._gerar_id_mensagem(elemento)
 
-                if msg_id in ids_processados_set:
+                if msg_id in ids_processados_set or msg_id in novos_ids:
                     continue
 
                 # Tenta capturar apenas o texto puro da mensagem (evitando horário/status)
@@ -262,6 +272,9 @@ class WhatsAppMonitor:
                     continue
 
                 novos_ids.append(msg_id)
+
+                if self._eh_mensagem_alerta_bot(texto):
+                    continue
 
                 # Identifica se há remetente específico gravado no atributo data-pre-plain-text
                 origem_especifica = nome_contato

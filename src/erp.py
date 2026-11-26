@@ -86,6 +86,11 @@ class ERPLancador:
         e refaz o login automaticamente sem travar o robô.
         """
         try:
+            if not self.page or self.page.is_closed():
+                print("[ERP - Auto-Recuperação] 🔄 Janela do ERP fechada detectada! Reabrindo e reconectando...")
+                self.iniciar()
+                return self.login_e_navegar_para_entrada()
+
             url_atual = self.page.url.lower()
 
             # 1. Se foi deslogado (voltou para login.pod ou tela de login inicial visível)
@@ -117,6 +122,14 @@ class ERPLancador:
             return self.navegar_menu_para_entrada()
 
         except Exception as e:
+            if "closed" in str(e).lower():
+                try:
+                    print("[ERP - Auto-Recuperação] 🔄 Navegador do ERP foi fechado. Reabrindo sessão...")
+                    self.iniciar()
+                    return self.login_e_navegar_para_entrada()
+                except Exception as err_reabrir:
+                    print(f"[ERP - Auto-Recuperação] Falha ao reabrir ERP: {err_reabrir}")
+                    return False
             print(f"[ERP - Auto-Recuperação] Aviso ao checar sessão: {e}")
             return True
 
