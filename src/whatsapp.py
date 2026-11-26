@@ -598,19 +598,32 @@ class WhatsAppMonitor:
                 print(f"[WhatsApp] Aviso: botão 'Reagir' não apareceu para a NF {numero_nota}.")
                 return False
 
-            # Clica direto no 👍 da barra rápida do WhatsApp Web
+            # Clica exclusivamente no botão de 👍 do menu flutuante de reação (nunca em 👍 antigos do chat)
             emoji_joinha = self.page.locator(
-                "[data-emoji='👍'], [aria-label*='👍'], img[alt='👍'], "
-                "[aria-label*='polegar'], [aria-label*='Reagir com']"
+                "[aria-label*='Reagir com polegar'], [aria-label*='Reagir com 👍'], "
+                "[aria-label*='React with 👍'], [aria-label*='React with thumbs up']"
             )
-            if emoji_joinha.count() > 0 and emoji_joinha.last.is_visible():
-                emoji_joinha.last.click(timeout=5000)
+            if emoji_joinha.count() == 0:
+                emoji_joinha = self.page.locator("[aria-label*='Reagir com'], [aria-label*='React with']")
+
+            if emoji_joinha.count() > 0 and emoji_joinha.first.is_visible():
+                emoji_joinha.first.click(timeout=5000)
+                time.sleep(0.6)
                 try:
                     self.page.mouse.move(10, 10)
                 except Exception:
                     pass
-                print(f"[WhatsApp] 👍 Reação adicionada na mensagem da NF {numero_nota}!")
-                return True
+
+                # Confirma dentro do próprio balão se a reação 👍 apareceu de fato
+                reacao_no_balao = alvo.locator(
+                    "[aria-label*='reação'], [aria-label*='👍'], img[alt='👍'], [data-emoji='👍']"
+                )
+                if reacao_no_balao.count() > 0:
+                    print(f"[WhatsApp] 👍 Reação adicionada na mensagem da NF {numero_nota}!")
+                    return True
+
+                print(f"[WhatsApp] Aviso: clique realizado, mas a reação 👍 não apareceu no balão da NF {numero_nota}.")
+                return False
 
             # Diagnóstico real nos últimos elementos flutuantes do DOM (sem depender de role='dialog')
             labels_debug = []
