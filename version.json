@@ -1,5 +1,5 @@
 {
-  "versao": "1.2.6",
+  "versao": "1.2.7",
   "data_lancamento": "2026-11-26",
-  "descricao": "Atualização automática: app.py, main.py, scripts/atualizar_versao.py, src/whatsapp.py"
+  "descricao": "Atualização automática: src/whatsapp.py"
 }

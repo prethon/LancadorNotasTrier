@@ -189,6 +189,65 @@ class WhatsAppMonitor:
             return digitos_atual[-8:] == digitos_dest[-8:]
         return False
 
+    def _clicar_chat_visivel_na_lista(self, termo: str) -> bool:
+        """Procura o chat na lista lateral (#pane-side) visível e clica diretamente nele."""
+        try:
+            titulos = self.page.locator("#pane-side span[title]")
+            total = min(titulos.count(), 30)
+            termo_low = termo.strip().lower()
+            digitos_termo = re.sub(r"\D", "", termo)
+
+            # 1ª passada: correspondência exata ou pelos últimos 8 dígitos do telefone
+            for i in range(total):
+                el = titulos.nth(i)
+                nome = (el.get_attribute("title") or el.inner_text() or "").strip()
+                if not nome:
+                    continue
+                digitos_nome = re.sub(r"\D", "", nome)
+                match_tel = len(digitos_termo) >= 8 and len(digitos_nome) >= 8 and digitos_nome[-8:] == digitos_termo[-8:]
+                if nome.lower() == termo_low or match_tel:
+                    el.click(timeout=5000)
+                    time.sleep(1.2)
+                    return True
+
+            # 2ª passada: correspondência parcial no título
+            for i in range(total):
+                el = titulos.nth(i)
+                nome = (el.get_attribute("title") or el.inner_text() or "").strip()
+                if nome and termo_low in nome.lower():
+                    el.click(timeout=5000)
+                    time.sleep(1.2)
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _abrir_chat_por_nome_ou_numero(self, termo: str) -> bool:
+        """Abre um chat clicando direto na lista lateral ou buscando e clicando no resultado."""
+        if not termo or not termo.strip():
+            return False
+
+        termo_limpo = termo.strip()
+        if self._clicar_chat_visivel_na_lista(termo_limpo):
+            return True
+
+        campo_busca = self.page.locator("div[contenteditable='true'][data-tab='3'], div[aria-label='Pesquisar texto da caixa']")
+        if campo_busca.count() > 0:
+            try:
+                campo_busca.first.click(timeout=5000)
+                campo_busca.first.fill(termo_limpo)
+                time.sleep(1.5)
+                if self._clicar_chat_visivel_na_lista(termo_limpo):
+                    return True
+                self.page.keyboard.press("Enter")
+                time.sleep(1.2)
+                return self._chat_corresponde_destino(self._obter_chat_aberto_atual() or "", termo_limpo)
+            except Exception as e:
+                print(f"[WhatsApp] Aviso ao buscar chat '{termo_limpo}': {e}")
+            finally:
+                self._limpar_busca_whatsapp()
+        return False
+
     def selecionar_chat_alvo(self, nome_chat: Optional[str] = None) -> str:
         """
         Seleciona o chat desejado pelo nome ou abre automaticamente
@@ -203,18 +262,7 @@ class WhatsAppMonitor:
                 return chat_aberto
 
             print(f"[WhatsApp] Buscando pelo chat específico: '{chat_a_buscar}'...")
-            campo_busca = self.page.locator("div[contenteditable='true'][data-tab='3'], div[aria-label='Pesquisar texto da caixa']")
-            if campo_busca.count() > 0:
-                try:
-                    campo_busca.first.click(timeout=5000)
-                    campo_busca.first.fill(chat_a_buscar)
-                    time.sleep(0.8)
-                    self.page.keyboard.press("Enter")
-                    time.sleep(1.2)
-                except Exception as e:
-                    print(f"[WhatsApp] Aviso ao buscar chat '{chat_a_buscar}': {e}")
-                finally:
-                    self._limpar_busca_whatsapp()
+            self._abrir_chat_por_nome_ou_numero(chat_a_buscar)
         else:
             # Se não há chat fixo, verifica se há conversa aberta no painel principal (#main)
             painel_principal = self.page.locator("#main")
@@ -784,18 +832,7 @@ class WhatsAppMonitor:
         try:
             chat_atual = self._obter_chat_aberto_atual() or ""
             if not self._chat_corresponde_destino(chat_atual, destino):
-                # 1. Busca pelo destinatário e limpa a barra de busca em seguida
-                campo_busca = self.page.locator(
-                    "div[contenteditable='true'][data-tab='3'], div[aria-label='Pesquisar texto da caixa']"
-                )
-                if campo_busca.count() > 0:
-                    campo_busca.first.click(timeout=5000)
-                    campo_busca.first.fill(destino)
-                    time.sleep(1.0)
-                    self.page.keyboard.press("Enter")
-                    time.sleep(1.2)
-                    self._limpar_busca_whatsapp()
-
+                self._abrir_chat_por_nome_ou_numero(destino)
                 chat_atual = self._obter_chat_aberto_atual() or ""
 
             # Trava de segurança: nunca envia alerta no chat errado
