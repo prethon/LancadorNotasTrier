@@ -1,6 +1,7 @@
 import json
 import time
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Tuple, List, Optional, Dict, Any
 from playwright.sync_api import sync_playwright, BrowserContext, Page
@@ -234,13 +235,40 @@ class WhatsAppMonitor:
             print(f"[WhatsApp] Aviso ao salvar checkpoint: {e}")
 
     def _gerar_id_mensagem(self, elemento) -> str:
-        data_id = elemento.get_attribute("data-id")
-        if data_id:
-            return data_id
+        try:
+            data_id = elemento.evaluate(
+                "el => el.getAttribute('data-id') || (el.closest('[data-id]') ? el.closest('[data-id]').getAttribute('data-id') : '')"
+            )
+            if data_id:
+                return data_id
+        except Exception:
+            data_id = elemento.get_attribute("data-id")
+            if data_id:
+                return data_id
 
         pre_text = elemento.get_attribute("data-pre-plain-text") or ""
         texto = elemento.inner_text().strip()
         return f"{pre_text}_{texto}"
+
+    def _extrair_data_hora_mensagem(self, pre_text: str) -> Optional[datetime]:
+        """Extrai o timestamp (precisão de minuto) do atributo data-pre-plain-text do WhatsApp."""
+        if not pre_text:
+            return None
+        # Padrão PT-BR: [08:35, 26/11/2026]
+        m_pt = re.search(r"\[(\d{1,2}:\d{2}),\s*(\d{2}/\d{2}/\d{4})\]", pre_text)
+        if m_pt:
+            try:
+                return datetime.strptime(f"{m_pt.group(2)} {m_pt.group(1)}", "%d/%m/%Y %H:%M")
+            except ValueError:
+                pass
+        # Padrão EN fallback: [8:35 AM, 11/26/2026]
+        m_en = re.search(r"\[(\d{1,2}:\d{2}\s*[AP]M),\s*(\d{1,2}/\d{1,2}/\d{4})\]", pre_text, re.IGNORECASE)
+        if m_en:
+            try:
+                return datetime.strptime(f"{m_en.group(2)} {m_en.group(1).upper()}", "%m/%d/%Y %I:%M %p")
+            except ValueError:
+                pass
+        return None
 
     def _eh_mensagem_alerta_bot(self, texto: str) -> bool:
         """Identifica mensagens de alerta enviadas pelo próprio robô para evitar loop."""
@@ -272,6 +300,13 @@ class WhatsAppMonitor:
 
         print(f"[WhatsApp] Lendo mensagens de '{nome_contato}' ({total_elementos} balões detectados)...")
         ids_processados_set = set(checkpoint.get("ids_processados", []))
+        marco_zero_minuto: Optional[datetime] = None
+        if checkpoint.get("criado_em"):
+            try:
+                marco_zero_minuto = datetime.fromtimestamp(float(checkpoint["criado_em"])).replace(second=0, microsecond=0)
+            except Exception:
+                marco_zero_minuto = None
+
         novas_notas: List[str] = []
         novos_ids: List[str] = []
 
@@ -280,6 +315,14 @@ class WhatsAppMonitor:
         for i in range(inicio, total_elementos):
             try:
                 elemento = locators_mensagens.nth(i)
+                pre_text = elemento.get_attribute("data-pre-plain-text") or ""
+
+                # Ignora qualquer mensagem com horário estritamente anterior ao marco zero (mesmo se rolar o histórico)
+                if marco_zero_minuto and pre_text:
+                    msg_dt = self._extrair_data_hora_mensagem(pre_text)
+                    if msg_dt and msg_dt < marco_zero_minuto:
+                        continue
+
                 msg_id = self._gerar_id_mensagem(elemento)
 
                 if msg_id in ids_processados_set or msg_id in novos_ids:
@@ -302,7 +345,6 @@ class WhatsAppMonitor:
 
                 # Identifica se há remetente específico gravado no atributo data-pre-plain-text
                 origem_especifica = nome_contato
-                pre_text = elemento.get_attribute("data-pre-plain-text") or ""
                 if pre_text:
                     match_remetente = re.search(r"\]\s*([^:]+):", pre_text)
                     if match_remetente:
@@ -643,6 +685,15 @@ class WhatsAppMonitor:
                     "[aria-label*='reação'], [aria-label*='👍'], img[alt='👍'], [data-emoji='👍']"
                 )
                 if reacao_no_balao.count() > 0:
+                    # Mantém o chat rolado para o final (mensagens mais recentes) após reagir
+                    try:
+                        self.page.evaluate("""() => {
+                            const app = document.querySelector('#main [role="application"]');
+                            const scrollArea = app ? app.parentElement : document.querySelector('#main div.copyable-area');
+                            if (scrollArea) scrollArea.scrollTop = scrollArea.scrollHeight;
+                        }""")
+                    except Exception:
+                        pass
                     print(f"[WhatsApp] 👍 Reação adicionada na mensagem da NF {numero_nota}!")
                     return True
 
