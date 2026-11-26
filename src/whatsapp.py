@@ -190,36 +190,47 @@ class WhatsAppMonitor:
         return False
 
     def _clicar_chat_visivel_na_lista(self, termo: str) -> bool:
-        """Procura o chat na lista lateral (#pane-side) visível e clica diretamente nele."""
+        """Procura o chat em toda a lista lateral (#pane-side) e clica diretamente nele."""
+        termo_limpo = termo.strip()
+        if not termo_limpo:
+            return False
+
         try:
-            titulos = self.page.locator("#pane-side span[title]")
-            total = min(titulos.count(), 30)
-            termo_low = termo.strip().lower()
-            digitos_termo = re.sub(r"\D", "", termo)
+            # 1. Correspondência exata em toda a lista (sem limite de 30 itens)
+            exato = self.page.locator("#pane-side span[title]").filter(
+                has_text=re.compile(rf"^{re.escape(termo_limpo)}$", re.IGNORECASE)
+            )
+            if exato.count() > 0:
+                alvo = exato.first
+                alvo.scroll_into_view_if_needed()
+                alvo.click(timeout=5000)
+                time.sleep(1.2)
+                return True
 
-            # 1ª passada: correspondência exata ou pelos últimos 8 dígitos do telefone
-            for i in range(total):
-                el = titulos.nth(i)
-                nome = (el.get_attribute("title") or el.inner_text() or "").strip()
-                if not nome:
-                    continue
-                digitos_nome = re.sub(r"\D", "", nome)
-                match_tel = len(digitos_termo) >= 8 and len(digitos_nome) >= 8 and digitos_nome[-8:] == digitos_termo[-8:]
-                if nome.lower() == termo_low or match_tel:
-                    el.click(timeout=5000)
-                    time.sleep(1.2)
-                    return True
+            # 2. Correspondência parcial (mesmo mecanismo do Multi-Lojas)
+            parcial = self.page.locator("#pane-side span[title]").filter(has_text=termo_limpo)
+            if parcial.count() > 0:
+                alvo = parcial.first
+                alvo.scroll_into_view_if_needed()
+                alvo.click(timeout=5000)
+                time.sleep(1.2)
+                return True
 
-            # 2ª passada: correspondência parcial no título
-            for i in range(total):
-                el = titulos.nth(i)
-                nome = (el.get_attribute("title") or el.inner_text() or "").strip()
-                if nome and termo_low in nome.lower():
-                    el.click(timeout=5000)
-                    time.sleep(1.2)
-                    return True
-        except Exception:
-            pass
+            # 3. Se for telefone, procura pelos últimos 8 dígitos em toda a lista
+            digitos_termo = re.sub(r"\D", "", termo_limpo)
+            if len(digitos_termo) >= 8:
+                titulos = self.page.locator("#pane-side span[title]")
+                for i in range(titulos.count()):
+                    el = titulos.nth(i)
+                    nome = (el.get_attribute("title") or el.inner_text() or "").strip()
+                    digitos_nome = re.sub(r"\D", "", nome)
+                    if len(digitos_nome) >= 8 and digitos_nome[-8:] == digitos_termo[-8:]:
+                        el.scroll_into_view_if_needed()
+                        el.click(timeout=5000)
+                        time.sleep(1.2)
+                        return True
+        except Exception as e:
+            print(f"[WhatsApp] Aviso ao clicar no chat '{termo_limpo}' na lista lateral: {e}")
         return False
 
     def _abrir_chat_por_nome_ou_numero(self, termo: str) -> bool:
@@ -235,7 +246,9 @@ class WhatsAppMonitor:
         if campo_busca.count() > 0:
             try:
                 campo_busca.first.click(timeout=5000)
-                campo_busca.first.fill(termo_limpo)
+                self.page.keyboard.press("ControlOrMeta+a")
+                self.page.keyboard.press("Backspace")
+                campo_busca.first.press_sequentially(termo_limpo, delay=30)
                 time.sleep(1.5)
                 if self._clicar_chat_visivel_na_lista(termo_limpo):
                     return True
