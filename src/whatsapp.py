@@ -503,7 +503,7 @@ class WhatsAppMonitor:
                     self.selecionar_chat_alvo(origem_contato)
                     time.sleep(1)
 
-            print(f"[WhatsApp] Procurando mensagem da NF {numero_nota} para reagir com ✅...")
+            print(f"[WhatsApp] Procurando mensagem da NF {numero_nota} para reagir com 👍...")
             bolhas = self.page.locator(
                 f"#main div[data-id]:has-text('{numero_nota}'), "
                 f"#main div.message-in:has-text('{numero_nota}'), "
@@ -559,43 +559,7 @@ class WhatsAppMonitor:
                 print(f"[WhatsApp] Aviso: botão 'Reagir' não apareceu para a NF {numero_nota}.")
                 return False
 
-            # 1. Tenta clicar direto no ✅ caso já esteja nos emojis rápidos/recentes (.last = popup recém-aberto)
-            seletor_check = (
-                "[data-emoji='✅'], [aria-label*='✅'], img[alt='✅'], "
-                "[aria-label*='Marca de seleção'], [aria-label*='marca de seleção']"
-            )
-            emoji_check = self.page.locator(seletor_check)
-            if emoji_check.count() > 0 and emoji_check.last.is_visible():
-                emoji_check.last.click(timeout=5000)
-                print(f"[WhatsApp] ✅ Reação adicionada com sucesso na mensagem da NF {numero_nota}!")
-                return True
-
-            # 2. Abre o seletor completo '+' ('Mais reações' / 'Mais emojis') para escolher ✅
-            btn_mais = self.page.locator(
-                "[aria-label*='Mais reaç'], [aria-label*='Mais emoji'], "
-                "[aria-label*='More reaction'], [data-icon*='plus']"
-            )
-            if btn_mais.count() > 0 and btn_mais.last.is_visible():
-                btn_mais.last.click(timeout=5000)
-                time.sleep(0.6)
-
-                campo_busca_emoji = self.page.locator(
-                    "input[placeholder*='Pesquisar'], input[aria-label*='Pesquisar'], "
-                    "div[contenteditable='true'][aria-label*='Pesquisar'], input[placeholder*='Search']"
-                )
-                for termo_busca in ("marca", "check"):
-                    if campo_busca_emoji.count() > 0:
-                        campo_busca_emoji.last.click(timeout=3000)
-                        campo_busca_emoji.last.fill(termo_busca)
-                        time.sleep(0.6)
-
-                    emoji_check = self.page.locator(seletor_check)
-                    if emoji_check.count() > 0 and emoji_check.last.is_visible():
-                        emoji_check.last.click(timeout=5000)
-                        print(f"[WhatsApp] ✅ Reação adicionada com sucesso na mensagem da NF {numero_nota}!")
-                        return True
-
-            # 3. Fallback para 👍 da barra rápida
+            # Clica direto no 👍 da barra rápida do WhatsApp Web
             emoji_joinha = self.page.locator(
                 "[data-emoji='👍'], [aria-label*='👍'], img[alt='👍'], "
                 "[aria-label*='polegar'], [aria-label*='Reagir com']"
@@ -618,7 +582,7 @@ class WhatsAppMonitor:
                 }""")
             except Exception:
                 pass
-            print(f"[WhatsApp] Aviso: menu de reação abriu, mas o emoji ✅ não foi localizado para a NF {numero_nota}. Opções vistas: {labels_debug}")
+            print(f"[WhatsApp] Aviso: menu de reação abriu, mas o emoji 👍 não foi localizado para a NF {numero_nota}. Opções vistas: {labels_debug}")
             self.page.keyboard.press("Escape")
             return False
         except Exception as e:
