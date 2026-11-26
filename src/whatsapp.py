@@ -12,7 +12,8 @@ from .config import (
     DATA_DIR,
 )
 from .extractor import extrair_numeros_notas
-from .database import inserir_nota
+from .database import inserir_nota, obter_status_nota
+from .reporter import registrar_duplicidade
 
 CHECKPOINT_FILE = DATA_DIR / "whatsapp_checkpoint.json"
 
@@ -318,7 +319,13 @@ class WhatsAppMonitor:
                             print(f"  -> [NOVA NOTA CAPTURADA] Nº {num} ({origem_especifica}) enfileirada no banco local.")
                             novas_notas.append(num)
                         else:
-                            print(f"  -> [INFO] Nº {num} ({origem_especifica}) já estava no banco de dados.")
+                            status_atual = obter_status_nota(origem_especifica, num)
+                            if status_atual in ("lancado", "duplicada_erp"):
+                                msg_dup = "Nota já lançada anteriormente (reenviada no WhatsApp)"
+                                registrar_duplicidade(num, origem_especifica, msg_dup)
+                                print(f"  -> [DUPLICIDADE] Nº {num} ({origem_especifica}) já lançada antes. Registrada em duplicidades.csv.")
+                            else:
+                                print(f"  -> [INFO] Nº {num} ({origem_especifica}) já estava no banco de dados (status: {status_atual}).")
 
             except Exception as err:
                 continue

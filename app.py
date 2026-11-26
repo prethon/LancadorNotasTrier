@@ -843,7 +843,11 @@ class App(tk.Tk):
             stats = obter_resumo_estatisticas()
             self.card_pendentes.config(text=str(stats.get("pendente", 0)))
             self.card_lancadas.config(text=str(stats.get("lancado", 0)))
-            self.card_duplicadas.config(text=str(stats.get("duplicada_erp", 0)))
+            tot_duplicadas = max(
+                stats.get("duplicada_erp", 0),
+                self._contar_linhas_relatorio("duplicidades.csv"),
+            )
+            self.card_duplicadas.config(text=str(tot_duplicadas))
             self.card_sem_cadastro.config(text=str(stats.get("produto_sem_cadastro", 0)))
             self.card_inexistentes.config(text=str(stats.get("nota_inexistente", 0)))
             self.card_erros.config(text=str(stats.get("erro", 0)))

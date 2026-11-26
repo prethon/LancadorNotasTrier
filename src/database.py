@@ -72,6 +72,17 @@ def inserir_nota(numero_nota: str, origem_contato: str = "WhatsApp") -> bool:
             return False
 
 
+def obter_status_nota(origem_contato: str, numero_nota: str) -> Optional[str]:
+    """Retorna o status atual da nota no banco local, ou None se não existir."""
+    init_db()
+    id_unico = gerar_id_unico(origem_contato, numero_nota)
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT status FROM notas WHERE id_unico = ?", (id_unico,))
+        row = cursor.fetchone()
+        return row["status"] if row else None
+
+
 def obter_notas_pendentes(limite: Optional[int] = None) -> List[Dict[str, Any]]:
     """Obtém as notas pendentes de lançamento."""
     init_db()
