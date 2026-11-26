@@ -240,7 +240,25 @@ class ERPLancador:
         resultado_financeiro = {"sem_boleto": False, "divergencia": False, "diferenca": 0.0}
 
         texto_pagina = self.page.inner_text("body")
-        if not any(k in texto_pagina for k in ["Contas a Pagar", "Cad_0160", "Total Duplicatas", "Total Nota"]):
+        indicadores_cad0160 = [
+            "Lançamento Contas a Pagar",
+            "Cad_0160]",
+            "Total Duplicatas",
+            "Com Contas a Pagar",
+            "Sem Contas a Pagar",
+        ]
+        tela_financeira_aberta = any(k in texto_pagina for k in indicadores_cad0160)
+        if not tela_financeira_aberta and self.page.locator("iframe").count() > 0:
+            for idx_f in range(self.page.locator("iframe").count()):
+                try:
+                    txt_f = self.page.frame_locator("iframe").nth(idx_f).locator("body").inner_text(timeout=1500)
+                    if any(k in txt_f for k in indicadores_cad0160):
+                        tela_financeira_aberta = True
+                        break
+                except Exception:
+                    pass
+
+        if not tela_financeira_aberta:
             return resultado_financeiro
 
         print(f"[ERP - Financeiro] Tela de Contas a Pagar detectada. Analisando valores da NF {numero_nota}...")
@@ -292,8 +310,8 @@ class ERPLancador:
                             return textos
                 return []
 
-            # Faz até 6 tentativas (~5s extras) caso a linha esteja carregando via AJAX
-            for tentativa in range(6):
+            # Faz até 10 tentativas (~8s extras) caso a linha esteja carregando via AJAX
+            for tentativa in range(10):
                 celulas_textos = _buscar_no_escopo(self.page)
                 if not celulas_textos and self.page.locator("iframe").count() > 0:
                     for idx_f in range(self.page.locator("iframe").count()):
@@ -305,7 +323,7 @@ class ERPLancador:
                             pass
                 if celulas_textos:
                     break
-                if tentativa < 5:
+                if tentativa < 9:
                     time.sleep(0.8)
 
             if not celulas_textos:
@@ -487,8 +505,8 @@ class ERPLancador:
             print("[ERP] Clicando em Importar [F2]...")
             self.page.get_by_role("button", name="Importar [F2]").first.click()
 
-            # Aguarda até 5s pelo carregamento do iframe interno
-            for _ in range(10):
+            # Aguarda até 8s pelo carregamento do iframe interno
+            for _ in range(16):
                 if self.page.locator("iframe").count() > 0:
                     break
                 time.sleep(0.5)
@@ -615,63 +633,87 @@ class ERPLancador:
                 "button:has-text('OK'), input[type='button'][value='OK']"
             )
 
-            # 1. Tenta fechar por dentro de todos os iframes abertos (rolando até o rodapé primeiro)
-            total_iframes = self.page.locator("iframe").count()
-            for idx in range(total_iframes - 1, -1, -1):
-                try:
-                    frame = self.page.frame_locator("iframe").nth(idx)
+            # Executa até 2 rodadas para fechar modais empilhados (ex: Contas a Pagar + Resumo)
+            for _ in range(2):
+                if self.page.locator("div.modal_container, iframe").count() == 0 and self.page.get_by_role("button", name="Sair [Esc]").count() == 0:
+                    break
+
+                # 1. Tenta fechar por dentro de todos os iframes abertos (somente botão realmente VISÍVEL)
+                total_iframes = self.page.locator("iframe").count()
+                for idx in range(total_iframes - 1, -1, -1):
                     try:
-                        frame.locator("body").evaluate("el => window.scrollTo(0, document.body.scrollHeight)")
+                        frame = self.page.frame_locator("iframe").nth(idx)
+                        try:
+                            frame.locator("body").evaluate("el => window.scrollTo(0, document.body.scrollHeight)")
+                        except Exception:
+                            pass
+
+                        btn_frame = frame.locator(seletores_fechar)
+                        clicou_visivel = False
+                        for b_idx in range(btn_frame.count()):
+                            try:
+                                cand = btn_frame.nth(b_idx)
+                                if cand.is_visible():
+                                    cand.scroll_into_view_if_needed()
+                                    cand.click(timeout=3000)
+                                    time.sleep(0.8)
+                                    clicou_visivel = True
+                                    break
+                            except Exception:
+                                continue
+
+                        # Se o modal ainda estiver aberto, tenta Escape diretamente dentro do iframe
+                        if self.page.locator("div.modal_container, iframe").count() > 0:
+                            try:
+                                frame.locator("body").press("Escape")
+                                time.sleep(0.6)
+                            except Exception:
+                                pass
                     except Exception:
                         pass
 
-                    btn_frame = frame.locator(seletores_fechar)
-                    if btn_frame.count() > 0:
-                        alvo_btn = btn_frame.last
-                        alvo_btn.scroll_into_view_if_needed()
-                        alvo_btn.click(timeout=3000)
-                        time.sleep(0.8)
+                # 2. Tenta fechar pelo botão visível do container do modal
+                if self.page.locator("div.modal_container, iframe").count() > 0:
+                    try:
+                        btn_modal = self.page.locator(
+                            "div.modal_container button:has-text('Sair'), div.modal_container button:has-text('Fechar'), "
+                            "div.modal_container input[value*='Sair'], div.modal_container input[value*='Fechar'], "
+                            "div.modal_container .modal_close, div.modal_container a[title*='Fechar'], "
+                            "div.modal_container span[title*='Fechar']"
+                        )
+                        for m_idx in range(btn_modal.count()):
+                            try:
+                                cand_m = btn_modal.nth(m_idx)
+                                if cand_m.is_visible():
+                                    cand_m.scroll_into_view_if_needed()
+                                    cand_m.click(timeout=3000)
+                                    time.sleep(0.8)
+                                    break
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
 
-                    # Se o modal ainda estiver aberto, tenta Escape diretamente dentro do iframe
-                    if self.page.locator("div.modal_container, iframe").count() > 0:
-                        try:
-                            frame.locator("body").press("Escape")
-                            time.sleep(0.6)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+                # 3. Tenta botão 'Sair [Esc]' na própria página
+                if self.page.locator("div.modal_container, iframe").count() > 0 or self.page.get_by_role("button", name="Sair [Esc]").count() > 0:
+                    try:
+                        btn_sair = self.page.get_by_role("button", name="Sair [Esc]")
+                        for s_idx in range(btn_sair.count()):
+                            try:
+                                cand_s = btn_sair.nth(s_idx)
+                                if cand_s.is_visible():
+                                    cand_s.click(timeout=3000)
+                                    time.sleep(0.8)
+                                    break
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
 
-            # 2. Tenta fechar pelo botão do container do modal (ex: X ou fechar)
-            if self.page.locator("div.modal_container, iframe").count() > 0:
-                try:
-                    btn_modal = self.page.locator(
-                        "div.modal_container button:has-text('Sair'), div.modal_container button:has-text('Fechar'), "
-                        "div.modal_container input[value*='Sair'], div.modal_container input[value*='Fechar'], "
-                        "div.modal_container .modal_close, div.modal_container a[title*='Fechar'], "
-                        "div.modal_container span[title*='Fechar']"
-                    )
-                    if btn_modal.count() > 0:
-                        btn_modal.last.scroll_into_view_if_needed()
-                        btn_modal.last.click(timeout=3000)
-                        time.sleep(0.8)
-                except Exception:
-                    pass
-
-            # 3. Tenta botão 'Sair [Esc]' na própria página
-            if self.page.locator("div.modal_container, iframe").count() > 0 or self.page.get_by_role("button", name="Sair [Esc]").count() > 0:
-                try:
-                    btn_sair = self.page.get_by_role("button", name="Sair [Esc]")
-                    if btn_sair.count() > 0 and btn_sair.first.is_visible():
-                        btn_sair.first.click(timeout=3000)
-                        time.sleep(0.8)
-                except Exception:
-                    pass
-
-            # 4. Último recurso: tecla Escape na página ou fechar overlay modal_container se travado
-            if self.page.locator("div.modal_container, iframe").count() > 0:
-                self.page.keyboard.press("Escape")
-                time.sleep(0.6)
+                # 4. Último recurso: tecla Escape na página se o modal ainda persistir
+                if self.page.locator("div.modal_container, iframe").count() > 0:
+                    self.page.keyboard.press("Escape")
+                    time.sleep(0.6)
 
             if self.page.locator("div.modal_container").count() > 0:
                 try:
