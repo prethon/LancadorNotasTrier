@@ -376,14 +376,29 @@ class ERPLancador:
         self.verificar_ou_recuperar_sessao()
 
         try:
+            # 0. Limpa filtros/notas anteriores clicando em Limpar [F5]
+            self._limpar_filtros_tela()
+
             # 1. Garantir filtro 'Não Importadas'
             self._selecionar_filtro("Não Importadas")
 
-            # 2. Filtros Avançados
-            filtros = self.page.get_by_text("Filtros Avançados")
-            if filtros.count() > 0:
-                filtros.first.click()
-                time.sleep(0.5)
+            # 2. Filtros Avançados (só clica se o campo de nota ainda não estiver visível)
+            campo_nota = self.page.get_by_role("textbox", name="Número nota fiscal")
+            if campo_nota.count() == 0:
+                campo_nota = self.page.locator("input[name*='nota'], input[id*='nota']")
+
+            precisa_abrir_filtros = (campo_nota.count() == 0)
+            if not precisa_abrir_filtros:
+                try:
+                    precisa_abrir_filtros = not campo_nota.first.is_visible()
+                except Exception:
+                    precisa_abrir_filtros = True
+
+            if precisa_abrir_filtros:
+                filtros = self.page.get_by_text("Filtros Avançados")
+                if filtros.count() > 0:
+                    filtros.first.click()
+                    time.sleep(0.5)
 
             # 3. Número da nota
             campo_nota = self.page.get_by_role("textbox", name="Número nota fiscal")
@@ -537,6 +552,20 @@ class ERPLancador:
             registrar_outro_erro(numero_nota, origem_contato, mensagem_erro)
             self._fechar_iframe_ou_sair()
             return {"status": "erro", "mensagem": mensagem_erro}
+        finally:
+            self._limpar_filtros_tela()
+
+    def _limpar_filtros_tela(self) -> None:
+        """Clica no botão 'Limpar [F5]' na tela Rec_1020 para não acumular notas na caixa de filtro."""
+        try:
+            btn_limpar = self.page.get_by_role("button", name="Limpar [F5]")
+            if btn_limpar.count() == 0:
+                btn_limpar = self.page.locator("button:has-text('Limpar [F5]'), input[value*='Limpar']")
+            if btn_limpar.count() > 0 and btn_limpar.first.is_visible():
+                btn_limpar.first.click(timeout=3000)
+                time.sleep(0.8)
+        except Exception:
+            pass
 
     def _fechar_iframe_ou_sair(self) -> None:
         try:
