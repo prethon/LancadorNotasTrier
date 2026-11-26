@@ -690,44 +690,58 @@ class App(tk.Tk):
 
                     # 2. Abre o ERP uma única vez, faz login e posiciona no Rec_1020
                     with ERPLancador(headless=headless, url=url, usuario=user, senha=senha, playwright_instance=p) as erp:
-                        erp.login_e_navegar_para_entrada()
-                        print("[Painel] ERP conectado e posicionado na tela Rec_1020.")
+                        if erp.login_e_navegar_para_entrada():
+                            print("[Painel] ERP conectado e posicionado na tela Rec_1020.")
+                        else:
+                            print("[Painel - Aviso] ERP indisponível no início; o robô tentará reconectar nos próximos ciclos.")
                         print("[Painel] 🚀 Automação pronta! WhatsApp e ERP sincronizados sem recarregar.")
 
+                        ultimo_backup = time.time()
+
                         while not self.evento_parar.is_set():
-                            # Atualiza lista de ignorados caso o usuário tenha alterado na interface
-                            zap.chats_ignorar = self.var_whatsapp_ignorar.get().strip()
+                            try:
+                                # Atualiza lista de ignorados caso o usuário tenha alterado na interface
+                                zap.chats_ignorar = self.var_whatsapp_ignorar.get().strip()
 
-                            # Auto-recuperação do ERP caso a sessão tenha expirado por inatividade
-                            erp.verificar_ou_recuperar_sessao()
+                                # Auto-recuperação do ERP caso a sessão tenha expirado ou a rede tenha voltado
+                                erp_pronto = erp.verificar_ou_recuperar_sessao()
 
-                            # Varre novas mensagens no WhatsApp aberto
-                            novas_notas, _ = zap.ler_mensagens_e_enfileirar()
-                            self._atualizar_metricas()
-
-                            # Processa notas pendentes diretamente no ERP já aberto
-                            notas_pendentes = obter_notas_pendentes(limite=limite)
-                            for nota in notas_pendentes:
-                                if self.evento_parar.is_set():
-                                    break
-
-                                num = nota["numero_nota"]
-                                origem = nota["origem_contato"]
-                                id_unico = nota["id_unico"]
-
-                                res = erp.lancar_nota(id_unico=id_unico, numero_nota=num, origem_contato=origem)
-                                st = res.get("status", "")
+                                # Varre novas mensagens no WhatsApp aberto
+                                zap.ler_mensagens_e_enfileirar()
                                 self._atualizar_metricas()
 
-                                # Se lançada com sucesso, reage na hora no WhatsApp já aberto
-                                if st == "lancado":
-                                    try:
-                                        zap.reagir_mensagem_nota_lancada(num, origem_contato=origem)
-                                    except Exception as err_reagir:
-                                        print(f"[WhatsApp] Aviso ao reagir com ✅: {err_reagir}")
+                                # Processa notas pendentes diretamente no ERP já aberto
+                                if erp_pronto:
+                                    notas_pendentes = obter_notas_pendentes(limite=limite)
+                                    for nota in notas_pendentes:
+                                        if self.evento_parar.is_set():
+                                            break
 
-                                # Dispara alerta de inconsistência/boleto se configurado
-                                self._enviar_alertas_whatsapp(zap, num_alerta, res, num, origem)
+                                        num = nota["numero_nota"]
+                                        origem = nota["origem_contato"]
+                                        id_unico = nota["id_unico"]
+
+                                        res = erp.lancar_nota(id_unico=id_unico, numero_nota=num, origem_contato=origem)
+                                        st = res.get("status", "")
+                                        self._atualizar_metricas()
+
+                                        # Se lançada com sucesso, reage com 👍 no WhatsApp já aberto
+                                        if st == "lancado":
+                                            try:
+                                                zap.reagir_mensagem_nota_lancada(num, origem_contato=origem)
+                                            except Exception as err_reagir:
+                                                print(f"[WhatsApp] Aviso ao reagir com 👍: {err_reagir}")
+
+                                        # Dispara alerta de inconsistência/boleto se configurado
+                                        self._enviar_alertas_whatsapp(zap, num_alerta, res, num, origem)
+
+                                # Backup automático periódico a cada 6 horas
+                                if time.time() - ultimo_backup >= 21600:
+                                    executar_backup()
+                                    ultimo_backup = time.time()
+
+                            except Exception as err_ciclo:
+                                print(f"[Painel - Aviso] Falha temporária no ciclo (rede/ERP): {err_ciclo}. Tentando novamente em {intervalo}s...")
 
                             for _ in range(intervalo):
                                 if self.evento_parar.is_set():

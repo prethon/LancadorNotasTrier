@@ -150,6 +150,43 @@ class WhatsAppMonitor:
         except Exception:
             pass
 
+    def _limpar_busca_whatsapp(self) -> None:
+        """Limpa o campo de pesquisa lateral para que a lista de conversas não fique filtrada."""
+        try:
+            btn_limpar = self.page.locator(
+                "button[aria-label*='Cancelar pesquisa'], button[aria-label*='Limpar'], "
+                "span[data-icon='x-alt'], span[data-icon='search-close']"
+            )
+            if btn_limpar.count() > 0 and btn_limpar.first.is_visible():
+                btn_limpar.first.click(timeout=2000)
+                time.sleep(0.4)
+                return
+
+            campo_busca = self.page.locator(
+                "div[contenteditable='true'][data-tab='3'], div[aria-label='Pesquisar texto da caixa']"
+            )
+            if campo_busca.count() > 0:
+                campo_busca.first.click(timeout=2000)
+                self.page.keyboard.press("ControlOrMeta+a")
+                self.page.keyboard.press("Backspace")
+                time.sleep(0.3)
+        except Exception:
+            pass
+
+    def _chat_corresponde_destino(self, chat_atual: str, destino: str) -> bool:
+        """Confirma se o chat aberto corresponde ao contato/número de destino."""
+        if not chat_atual or not destino:
+            return False
+        atual_low = chat_atual.strip().lower()
+        dest_low = destino.strip().lower()
+        if dest_low in atual_low or atual_low in dest_low:
+            return True
+        digitos_atual = re.sub(r"\D", "", chat_atual)
+        digitos_dest = re.sub(r"\D", "", destino)
+        if len(digitos_atual) >= 8 and len(digitos_dest) >= 8:
+            return digitos_atual[-8:] == digitos_dest[-8:]
+        return False
+
     def selecionar_chat_alvo(self, nome_chat: Optional[str] = None) -> str:
         """
         Seleciona o chat desejado pelo nome ou abre automaticamente
@@ -165,10 +202,13 @@ class WhatsAppMonitor:
                 try:
                     campo_busca.first.click(timeout=5000)
                     campo_busca.first.fill(chat_a_buscar)
+                    time.sleep(0.8)
                     self.page.keyboard.press("Enter")
-                    time.sleep(1.5)
+                    time.sleep(1.2)
                 except Exception as e:
                     print(f"[WhatsApp] Aviso ao buscar chat '{chat_a_buscar}': {e}")
+                finally:
+                    self._limpar_busca_whatsapp()
         else:
             # Se não há chat fixo, verifica se há conversa aberta no painel principal (#main)
             painel_principal = self.page.locator("#main")
@@ -736,18 +776,34 @@ class WhatsAppMonitor:
         print(f"[WhatsApp - Alerta] Enviando notificação para '{destino}'...")
 
         try:
-            # 1. Tenta buscar pelo campo de pesquisa
-            campo_busca = self.page.locator("div[contenteditable='true'][data-tab='3'], div[aria-label='Pesquisar texto da caixa']")
-            if campo_busca.count() > 0:
-                campo_busca.first.click()
-                campo_busca.first.fill(destino)
-                self.page.keyboard.press("Enter")
-                time.sleep(1.5)
+            chat_atual = self._obter_chat_aberto_atual() or ""
+            if not self._chat_corresponde_destino(chat_atual, destino):
+                # 1. Busca pelo destinatário e limpa a barra de busca em seguida
+                campo_busca = self.page.locator(
+                    "div[contenteditable='true'][data-tab='3'], div[aria-label='Pesquisar texto da caixa']"
+                )
+                if campo_busca.count() > 0:
+                    campo_busca.first.click(timeout=5000)
+                    campo_busca.first.fill(destino)
+                    time.sleep(1.0)
+                    self.page.keyboard.press("Enter")
+                    time.sleep(1.2)
+                    self._limpar_busca_whatsapp()
+
+                chat_atual = self._obter_chat_aberto_atual() or ""
+
+            # Trava de segurança: nunca envia alerta no chat errado
+            if not self._chat_corresponde_destino(chat_atual, destino):
+                print(
+                    f"[WhatsApp - Alerta] ⚠️ Não foi possível confirmar o chat '{destino}' "
+                    f"(chat aberto: '{chat_atual}'). Alerta abortado para evitar envio na conversa errada."
+                )
+                return False
 
             # 2. Caixa de digitação da mensagem
             campo_msg = self.page.locator("div[contenteditable='true'][data-tab='10'], footer div[contenteditable='true']")
             if campo_msg.count() > 0:
-                campo_msg.first.click()
+                campo_msg.first.click(timeout=5000)
                 campo_msg.first.fill(mensagem_alerta)
                 self.page.keyboard.press("Enter")
                 time.sleep(1)
@@ -757,6 +813,7 @@ class WhatsAppMonitor:
             return False
         except Exception as e:
             print(f"[WhatsApp - Alerta] Erro ao enviar alerta: {e}")
+            self._limpar_busca_whatsapp()
             return False
 
     def fechar(self) -> None:

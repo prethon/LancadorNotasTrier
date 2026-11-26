@@ -35,11 +35,15 @@ def extrair_numeros_notas(texto: str) -> List[str]:
         if re.match(r"^\s*\d{1,2}/\d{1,2}/\d{2,4}\s*$", item):
             continue
 
-        # Mantém apenas os dígitos da nota (removendo pontos, traços ou espaços acidentais)
-        apenas_digitos = re.sub(r"\D", "", item)
+        tem_letras = bool(re.search(r"[A-Za-zÀ-ÿ]", item))
+        min_digitos = 4 if tem_letras else 2
 
-        # Considera qualquer sequência numérica válida de nota fiscal (2 a 9 dígitos)
-        if 2 <= len(apenas_digitos) <= 9 and apenas_digitos not in notas:
-            notas.append(apenas_digitos)
+        # Extrai blocos numéricos individuais (suporta ponto de milhar como "5.706.510"
+        # sem concatenar números separados como "Loja 12 NF 7485624")
+        tokens_numericos = re.findall(r"\d+(?:\.\d{3})*", item)
+        for token in tokens_numericos:
+            apenas_digitos = re.sub(r"\D", "", token)
+            if min_digitos <= len(apenas_digitos) <= 9 and apenas_digitos not in notas:
+                notas.append(apenas_digitos)
 
     return notas

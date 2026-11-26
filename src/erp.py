@@ -173,41 +173,45 @@ class ERPLancador:
 
     def login_e_navegar_para_entrada(self) -> bool:
         """Executa o login no ERP e navega até a tela de Entrada de Mercadorias NF-e."""
-        print(f"[ERP] Acessando Central ERP: {self.url}...")
-        self.page.goto(self.url, wait_until="load", timeout=60000)
-
-        # 1. Login inicial
-        campo_usuario = self.page.get_by_role("textbox", name="Usuário")
-        if campo_usuario.count() > 0:
-            print(f"[ERP] Efetuando login inicial (Usuário: {self.usuario})...")
-            campo_usuario.first.fill(self.usuario)
-            self.page.get_by_role("textbox", name="Senha").first.fill(self.senha)
-            self.page.get_by_role("button", name="Login [F2]").click()
-            time.sleep(2)
-
-        # 2. Navegação no menu
-        print("[ERP] Navegando: Compras -> Entradas de Mercadorias -> Entrada de Mercadorias NF-e...")
         try:
-            self.page.locator("a").filter(has_text=re.compile(r"^Compras$")).first.click(timeout=10000)
-            time.sleep(1)
-            self.page.locator("a").filter(has_text=re.compile(r"^Entradas de Mercadorias$")).click(timeout=10000)
-            time.sleep(1)
-            self.page.get_by_role("link", name="Entrada de Mercadorias NF-e").click(timeout=10000)
-            time.sleep(2)
+            print(f"[ERP] Acessando Central ERP: {self.url}...")
+            self.page.goto(self.url, wait_until="load", timeout=60000)
+
+            # 1. Login inicial
+            campo_usuario = self.page.get_by_role("textbox", name="Usuário")
+            if campo_usuario.count() > 0:
+                print(f"[ERP] Efetuando login inicial (Usuário: {self.usuario})...")
+                campo_usuario.first.fill(self.usuario)
+                self.page.get_by_role("textbox", name="Senha").first.fill(self.senha)
+                self.page.get_by_role("button", name="Login [F2]").click()
+                time.sleep(2)
+
+            # 2. Navegação no menu
+            print("[ERP] Navegando: Compras -> Entradas de Mercadorias -> Entrada de Mercadorias NF-e...")
+            try:
+                self.page.locator("a").filter(has_text=re.compile(r"^Compras$")).first.click(timeout=10000)
+                time.sleep(1)
+                self.page.locator("a").filter(has_text=re.compile(r"^Entradas de Mercadorias$")).click(timeout=10000)
+                time.sleep(1)
+                self.page.get_by_role("link", name="Entrada de Mercadorias NF-e").click(timeout=10000)
+                time.sleep(2)
+            except Exception as e:
+                print(f"[ERP] Aviso na navegação do menu (verificando se já está na tela): {e}")
+
+            # 3. Segunda autenticação
+            campo_usuario_sec = self.page.get_by_role("textbox", name="Usuário*")
+            if campo_usuario_sec.count() > 0:
+                print("[ERP] Confirmando autenticação do módulo de Entrada de NF-e...")
+                campo_usuario_sec.first.fill(self.usuario)
+                self.page.get_by_role("textbox", name="Senha*").first.fill(self.senha)
+                self.page.get_by_role("button", name="OK").click()
+                time.sleep(2)
+
+            print("[ERP] Tela de Entrada de Mercadorias NF-e pronta.")
+            return True
         except Exception as e:
-            print(f"[ERP] Aviso na navegação do menu (verificando se já está na tela): {e}")
-
-        # 3. Segunda autenticação
-        campo_usuario_sec = self.page.get_by_role("textbox", name="Usuário*")
-        if campo_usuario_sec.count() > 0:
-            print("[ERP] Confirmando autenticação do módulo de Entrada de NF-e...")
-            campo_usuario_sec.first.fill(self.usuario)
-            self.page.get_by_role("textbox", name="Senha*").first.fill(self.senha)
-            self.page.get_by_role("button", name="OK").click()
-            time.sleep(2)
-
-        print("[ERP] Tela de Entrada de Mercadorias NF-e pronta.")
-        return True
+            print(f"[ERP - Erro de Conexão] Falha ao acessar/logar no ERP: {e}")
+            return False
 
     def _selecionar_filtro(self, nome_opcao: str) -> None:
         """Seleciona o botão de opção (radio) no grupo Seleção (Não Importadas / Importadas)."""
