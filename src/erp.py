@@ -246,8 +246,7 @@ class ERPLancador:
         print(f"[ERP - Financeiro] Tela de Contas a Pagar detectada. Analisando valores da NF {numero_nota}...")
 
         try:
-            # 1. Localiza a linha exata da nota na tabela do Cad_0160 (evitando tabelas de fundo como Rec_1020)
-            linha_nota = None
+            # 1. Localiza a linha exata da nota na tabela do Cad_0160 (aguardando carregamento AJAX e checando iframes)
             celulas_textos = []
 
             def _extrair_celulas_validas(candidato_tr) -> list:
@@ -259,7 +258,6 @@ class ERPLancador:
             def _linha_parece_cad0160(textos: list) -> bool:
                 if len(textos) < 6:
                     return False
-                # Precisa conter o número da nota e, após ele, uma data DD/MM/AAAA seguida de valores monetários
                 idx_n = -1
                 for idx, t in enumerate(textos):
                     if numero_nota in t:
@@ -272,30 +270,47 @@ class ERPLancador:
                         return idx + 2 < len(textos)
                 return False
 
-            # Primeiro tenta dentro da tabela que contém os cabeçalhos do Cad_0160
-            tabela_cad = self.page.locator("table:has-text('Total Nota'):has-text('Total Duplicatas')")
-            if tabela_cad.count() > 0:
-                linhas_cad = tabela_cad.last.locator("tr")
-                for i in range(linhas_cad.count() - 1, -1, -1):
-                    txt = linhas_cad.nth(i).inner_text()
-                    if numero_nota in txt and "Total Nota" not in txt:
-                        textos = _extrair_celulas_validas(linhas_cad.nth(i))
-                        if _linha_parece_cad0160(textos):
-                            linha_nota = linhas_cad.nth(i)
-                            celulas_textos = textos
-                            break
+            def _buscar_no_escopo(escopo) -> list:
+                # Primeiro tenta dentro da tabela que contém os cabeçalhos do Cad_0160
+                tabela_cad = escopo.locator("table:has-text('Total Nota'):has-text('Total Duplicatas')")
+                if tabela_cad.count() > 0:
+                    linhas_cad = tabela_cad.last.locator("tr")
+                    for i in range(linhas_cad.count() - 1, -1, -1):
+                        txt = linhas_cad.nth(i).inner_text()
+                        if numero_nota in txt and "Total Nota" not in txt:
+                            textos = _extrair_celulas_validas(linhas_cad.nth(i))
+                            if _linha_parece_cad0160(textos):
+                                return textos
 
-            # Se o cabeçalho estiver em outra <table> (grid separado), busca de trás para frente nas linhas folha da página
-            if not celulas_textos:
-                linhas = self.page.locator("table tr, div[role='row']")
+                # Fallback para grid com cabeçalho separado
+                linhas = escopo.locator("table tr, div[role='row']")
                 for i in range(linhas.count() - 1, -1, -1):
                     txt = linhas.nth(i).inner_text()
                     if numero_nota in txt and "Total Nota" not in txt:
                         textos = _extrair_celulas_validas(linhas.nth(i))
                         if _linha_parece_cad0160(textos):
-                            linha_nota = linhas.nth(i)
-                            celulas_textos = textos
-                            break
+                            return textos
+                return []
+
+            # Faz até 6 tentativas (~5s extras) caso a linha esteja carregando via AJAX
+            for tentativa in range(6):
+                celulas_textos = _buscar_no_escopo(self.page)
+                if not celulas_textos and self.page.locator("iframe").count() > 0:
+                    for idx_f in range(self.page.locator("iframe").count()):
+                        try:
+                            celulas_textos = _buscar_no_escopo(self.page.frame_locator("iframe").nth(idx_f))
+                            if celulas_textos:
+                                break
+                        except Exception:
+                            pass
+                if celulas_textos:
+                    break
+                if tentativa < 5:
+                    time.sleep(0.8)
+
+            if not celulas_textos:
+                print(f"[ERP - Financeiro] Aviso: tabela do Cad_0160 não exibiu os valores da NF {numero_nota} a tempo (ignorado para evitar falso 'sem boleto').")
+                return resultado_financeiro
 
             fornecedor = "Desconhecido"
             tot_nota_val = 0.0
