@@ -89,6 +89,7 @@ class WhatsAppMonitor:
         while time.time() - tempo_inicial < timeout_login:
             if self.page.locator(seletor_painel_conversas).count() > 0:
                 print("[WhatsApp] Sessão autenticada e pronta para uso!")
+                self._fechar_modais_whatsapp()
                 return True
 
             if self.page.locator(seletor_qrcode).count() > 0:
@@ -101,33 +102,84 @@ class WhatsAppMonitor:
         print("[WhatsApp] Tempo limite excedido para autenticação no WhatsApp Web.")
         return False
 
+    def _fechar_modais_whatsapp(self) -> None:
+        """Fecha popups/modais do WhatsApp Web (ex: 'Continuar', 'Novidades') que bloqueiam cliques."""
+        try:
+            modal = self.page.locator("div[role='dialog'][aria-modal='true']")
+            if modal.count() == 0:
+                return
+
+            print("[WhatsApp] Popup/modal detectado na tela. Tentando fechar automaticamente...")
+            botoes_dispensa = modal.first.locator(
+                "button:has-text('Continuar'), button:has-text('OK'), button:has-text('Ok'), "
+                "button:has-text('Entendi'), button:has-text('Fechar'), button:has-text('Agora não'), "
+                "button[aria-label='Fechar'], button[aria-label='Close']"
+            )
+            if botoes_dispensa.count() > 0:
+                botoes_dispensa.first.click(timeout=3000)
+                time.sleep(0.8)
+
+            if self.page.locator("div[role='dialog'][aria-modal='true']").count() > 0:
+                self.page.keyboard.press("Escape")
+                time.sleep(0.8)
+        except Exception:
+            pass
+
     def selecionar_chat_alvo(self, nome_chat: Optional[str] = None) -> str:
         """
         Seleciona o chat desejado pelo nome ou abre automaticamente
-        a conversa mais recente caso nenhuma esteja aberta.
+        a conversa mais recente (não ignorada) caso nenhuma esteja aberta.
         """
+        self._fechar_modais_whatsapp()
         chat_a_buscar = nome_chat or WHATSAPP_CHAT_ALVO
 
         if chat_a_buscar:
             print(f"[WhatsApp] Buscando pelo chat específico: '{chat_a_buscar}'...")
             campo_busca = self.page.locator("div[contenteditable='true'][data-tab='3'], div[aria-label='Pesquisar texto da caixa']")
             if campo_busca.count() > 0:
-                campo_busca.first.click()
-                campo_busca.first.fill(chat_a_buscar)
-                self.page.keyboard.press("Enter")
-                time.sleep(1.5)
+                try:
+                    campo_busca.first.click(timeout=5000)
+                    campo_busca.first.fill(chat_a_buscar)
+                    self.page.keyboard.press("Enter")
+                    time.sleep(1.5)
+                except Exception as e:
+                    print(f"[WhatsApp] Aviso ao buscar chat '{chat_a_buscar}': {e}")
         else:
             # Se não há chat fixo, verifica se há conversa aberta no painel principal (#main)
             painel_principal = self.page.locator("#main")
             if painel_principal.count() == 0:
-                print("[WhatsApp] Nenhuma conversa aberta na tela. Abrindo o primeiro chat da lista lateral...")
-                primeiro_chat = self.page.locator(
-                    "#pane-side div[role='row'], #pane-side div[role='gridcell'], "
-                    "#pane-side div[data-testid='cell-frame-container'], #pane-side div[role='listitem'], #pane-side div[tabindex='-1']"
+                print("[WhatsApp] Nenhuma conversa aberta na tela. Abrindo o primeiro chat válido da lista lateral...")
+                chats_laterais = self.page.locator(
+                    "#pane-side div[role='row'], #pane-side div[role='listitem'], "
+                    "#pane-side div[data-testid='cell-frame-container']"
                 )
-                if primeiro_chat.count() > 0:
-                    primeiro_chat.first.click()
-                    time.sleep(1.5)
+                clicou = False
+                for idx in range(min(chats_laterais.count(), 15)):
+                    try:
+                        linha = chats_laterais.nth(idx)
+                        titulo_el = linha.locator("span[title]").first
+                        nome_linha = titulo_el.get_attribute("title") or titulo_el.inner_text().strip() if titulo_el.count() > 0 else ""
+                        if nome_linha and self._chat_esta_ignorado(nome_linha):
+                            continue
+                        linha.click(timeout=5000)
+                        time.sleep(1.5)
+                        clicou = True
+                        break
+                    except Exception:
+                        continue
+
+                if not clicou:
+                    try:
+                        titulos = self.page.locator("#pane-side span[title]")
+                        for idx in range(min(titulos.count(), 15)):
+                            nome_t = titulos.nth(idx).get_attribute("title") or titulos.nth(idx).inner_text().strip()
+                            if nome_t and self._chat_esta_ignorado(nome_t):
+                                continue
+                            titulos.nth(idx).click(timeout=5000)
+                            time.sleep(1.5)
+                            break
+                    except Exception as e:
+                        print(f"[WhatsApp] Aviso ao abrir primeiro chat da lista: {e}")
 
         header_title = self.page.locator(
             "#main header span[title], #main header div[role='button'] span[dir='auto'], #main header span[dir='auto'], header span[title]"
@@ -243,6 +295,7 @@ class WhatsAppMonitor:
         Se várias lojas enviarem mensagens simultaneamente, abre cada uma
         e enfileira todas as notas no SQLite.
         """
+        self._fechar_modais_whatsapp()
         checkpoint = self._carregar_dados_checkpoint()
 
         # 1. Se for a primeira execução de todas, define o marco zero mas PRESERVA as últimas 5 mensagens
