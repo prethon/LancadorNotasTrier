@@ -565,17 +565,18 @@ class WhatsAppMonitor:
                     pass
             time.sleep(0.6)
 
-            seletores_react = (
-                "button[aria-label*='Reagir'], div[aria-label*='Reagir'], "
-                "button[aria-label*='React'], div[aria-label*='React'], "
-                "[data-testid='reaction-button'], span[data-icon='react'], span[data-icon='smiley']"
-            )
-            btn_react = alvo.locator(seletores_react)
+            btn_react = alvo.locator("[aria-label='Reagir']")
+            if btn_react.count() == 0:
+                btn_react = alvo.locator(
+                    "button[aria-label*='Reagir'], div[aria-label*='Reagir'], "
+                    "button[aria-label*='React'], div[aria-label*='React'], "
+                    "[data-testid='reaction-button'], span[data-icon='react'], span[data-icon='smiley']"
+                )
             abriu_menu = False
 
             if btn_react.count() > 0 and btn_react.first.is_visible():
                 btn_react.first.click(timeout=5000)
-                time.sleep(0.6)
+                time.sleep(0.7)
                 abriu_menu = True
             else:
                 # Plano B: clique com botão direito no balão -> "Reagir"
@@ -587,7 +588,7 @@ class WhatsAppMonitor:
                     )
                     if item_reagir.count() > 0 and item_reagir.first.is_visible():
                         item_reagir.first.click(timeout=5000)
-                        time.sleep(0.6)
+                        time.sleep(0.7)
                         abriu_menu = True
                     else:
                         self.page.keyboard.press("Escape")
@@ -598,16 +599,32 @@ class WhatsAppMonitor:
                 print(f"[WhatsApp] Aviso: botão 'Reagir' não apareceu para a NF {numero_nota}.")
                 return False
 
-            # Clica exclusivamente no botão de 👍 do menu flutuante de reação (nunca em 👍 antigos do chat)
-            emoji_joinha = self.page.locator(
-                "[aria-label*='Reagir com polegar'], [aria-label*='Reagir com 👍'], "
-                "[aria-label*='React with 👍'], [aria-label*='React with thumbs up']"
-            )
-            if emoji_joinha.count() == 0:
-                emoji_joinha = self.page.locator("[aria-label*='Reagir com'], [aria-label*='React with']")
+            # Procura e clica no 👍 exclusivamente FORA de #main e #pane-side (no popup flutuante)
+            coords_joinha = self.page.evaluate("""() => {
+                const candidatos = document.querySelectorAll(
+                    "[aria-label*='👍'], [aria-label*='polegar' i], [aria-label*='thumbs' i], " +
+                    "[data-emoji='👍'], img[alt='👍'], span, button, div[role='button']"
+                );
+                for (const el of candidatos) {
+                    if (el.closest('#main') || el.closest('#pane-side')) continue;
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width <= 0 || rect.height <= 0 || rect.width > 120 || rect.height > 120) continue;
+                    const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                    const alt = (el.getAttribute('alt') || '');
+                    const emoji = (el.getAttribute('data-emoji') || '');
+                    const txt = (el.textContent || '').trim();
+                    if (
+                        emoji === '👍' || alt === '👍' || txt === '👍' ||
+                        aria.includes('👍') || aria.includes('polegar') || aria.includes('thumbs')
+                    ) {
+                        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+                    }
+                }
+                return null;
+            }""")
 
-            if emoji_joinha.count() > 0 and emoji_joinha.first.is_visible():
-                emoji_joinha.first.click(timeout=5000)
+            if coords_joinha:
+                self.page.mouse.click(coords_joinha["x"], coords_joinha["y"])
                 time.sleep(0.6)
                 try:
                     self.page.mouse.move(10, 10)
@@ -622,23 +639,27 @@ class WhatsAppMonitor:
                     print(f"[WhatsApp] 👍 Reação adicionada na mensagem da NF {numero_nota}!")
                     return True
 
-                print(f"[WhatsApp] Aviso: clique realizado, mas a reação 👍 não apareceu no balão da NF {numero_nota}.")
+                print(f"[WhatsApp] Aviso: clique em ({int(coords_joinha['x'])}, {int(coords_joinha['y'])}) realizado, mas a reação 👍 não apareceu no balão da NF {numero_nota}.")
                 return False
 
-            # Diagnóstico real nos últimos elementos flutuantes do DOM (sem depender de role='dialog')
+            # Diagnóstico: lista apenas elementos visíveis fora de #main e #pane-side
             labels_debug = []
             try:
                 labels_debug = self.page.evaluate("""() => {
-                    const els = document.querySelectorAll(
-                        "[role='menu'] [aria-label], [role='application'] [aria-label], " +
-                        "div[tabindex='-1'] [aria-label], body > div:last-child [aria-label], " +
-                        "body > div:last-child img[alt]"
-                    );
-                    return Array.from(els).slice(-12).map(el => el.getAttribute("aria-label") || el.getAttribute("alt") || "").filter(Boolean);
+                    const els = document.querySelectorAll("button, [role='button'], [aria-label], img[alt]");
+                    const res = [];
+                    for (const el of els) {
+                        if (el.closest('#main') || el.closest('#pane-side')) continue;
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width <= 0 || rect.height <= 0) continue;
+                        const info = el.getAttribute('aria-label') || el.getAttribute('alt') || (el.textContent || '').trim();
+                        if (info) res.push(info.slice(0, 40));
+                    }
+                    return res.slice(-15);
                 }""")
             except Exception:
                 pass
-            print(f"[WhatsApp] Aviso: menu de reação abriu, mas o emoji 👍 não foi localizado para a NF {numero_nota}. Opções vistas: {labels_debug}")
+            print(f"[WhatsApp] Aviso: menu de reação abriu, mas o emoji 👍 não foi localizado fora do #main. Opções vistas: {labels_debug}")
             self.page.keyboard.press("Escape")
             return False
         except Exception as e:
