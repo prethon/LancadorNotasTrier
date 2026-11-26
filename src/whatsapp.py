@@ -93,7 +93,10 @@ class WhatsAppMonitor:
                 return True
 
             if self.page.locator(seletor_qrcode).count() > 0:
-                print("[WhatsApp] Aguardando escaneamento do QR Code no navegador aberto...")
+                if self.headless:
+                    print("[WhatsApp] ⚠️ QR Code necessário! Marque 'Modo Teste (Navegador Visível)' para escanear o QR Code.")
+                else:
+                    print("[WhatsApp] Aguardando escaneamento do QR Code no navegador aberto...")
                 time.sleep(3)
                 continue
 

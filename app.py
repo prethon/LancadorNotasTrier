@@ -253,7 +253,8 @@ class App(tk.Tk):
         chk_teste = ttk.Checkbutton(
             frame_opcoes,
             text="Modo Teste (Navegador Visível)",
-            variable=self.var_modo_teste
+            variable=self.var_modo_teste,
+            command=self._salvar_configuracoes_interface,
         )
         chk_teste.pack(side=tk.LEFT, padx=(0, 12))
 
@@ -638,6 +639,7 @@ class App(tk.Tk):
         url = self.var_erp_url.get().strip()
         user = self.var_erp_usuario.get().strip()
         senha = self.var_erp_senha.get().strip()
+        headless = not self.var_modo_teste.get()
 
         def teste():
             print("\n" + "=" * 65)
@@ -649,7 +651,7 @@ class App(tk.Tk):
             inserir_nota(numero_nota=numero, origem_contato=origem)
             id_unico = gerar_id_unico(origem, numero)
 
-            with ERPLancador(headless=False, url=url, usuario=user, senha=senha) as erp:
+            with ERPLancador(headless=headless, url=url, usuario=user, senha=senha) as erp:
                 erp.login_e_navegar_para_entrada()
                 resultado = erp.lancar_nota(id_unico=id_unico, numero_nota=numero, origem_contato=origem)
                 status = resultado.get("status", "")
@@ -669,16 +671,17 @@ class App(tk.Tk):
         limite = self.var_limite_notas.get()
         intervalo = self.var_intervalo.get()
         num_alerta = self.var_whatsapp_alerta.get().strip()
+        headless = not self.var_modo_teste.get()
 
         def loop_continuo():
             print(f"[Painel] Iniciando monitoramento contínuo em tempo real...")
-            print(f"[Painel] Central ERP: {url} | Intervalo: {intervalo}s")
+            print(f"[Painel] Central ERP: {url} | Intervalo: {intervalo}s | Navegador: {'Oculto' if headless else 'Visível'}")
             if num_alerta:
                 print(f"[Painel] Notificações ativas para o WhatsApp: {num_alerta}")
 
             with sync_playwright() as p:
                 # 1. Abre o WhatsApp uma única vez e mantém ativo na tela
-                with WhatsAppMonitor(playwright_instance=p, chats_ignorar=self.var_whatsapp_ignorar.get().strip()) as zap:
+                with WhatsAppMonitor(headless=headless, playwright_instance=p, chats_ignorar=self.var_whatsapp_ignorar.get().strip()) as zap:
                     if not zap.abrir_e_garantir_login():
                         print("[Painel] Não foi possível autenticar o WhatsApp Web. Abortando.")
                         return
@@ -686,7 +689,7 @@ class App(tk.Tk):
                     print("[Painel] WhatsApp Web conectado e pronto na tela.")
 
                     # 2. Abre o ERP uma única vez, faz login e posiciona no Rec_1020
-                    with ERPLancador(url=url, usuario=user, senha=senha, playwright_instance=p) as erp:
+                    with ERPLancador(headless=headless, url=url, usuario=user, senha=senha, playwright_instance=p) as erp:
                         erp.login_e_navegar_para_entrada()
                         print("[Painel] ERP conectado e posicionado na tela Rec_1020.")
                         print("[Painel] 🚀 Automação pronta! WhatsApp e ERP sincronizados sem recarregar.")
@@ -742,17 +745,18 @@ class App(tk.Tk):
         senha = self.var_erp_senha.get().strip()
         limite = self.var_limite_notas.get()
         num_alerta = self.var_whatsapp_alerta.get().strip()
+        headless = not self.var_modo_teste.get()
 
         def ciclo():
             print(f"[Painel] Executando ciclo único na Central: {url}...")
             with sync_playwright() as p:
-                with WhatsAppMonitor(playwright_instance=p, chats_ignorar=self.var_whatsapp_ignorar.get().strip()) as zap:
+                with WhatsAppMonitor(headless=headless, playwright_instance=p, chats_ignorar=self.var_whatsapp_ignorar.get().strip()) as zap:
                     if not zap.abrir_e_garantir_login():
                         return
                     zap.ler_mensagens_e_enfileirar()
                     self._atualizar_metricas()
 
-                    with ERPLancador(url=url, usuario=user, senha=senha, playwright_instance=p) as erp:
+                    with ERPLancador(headless=headless, url=url, usuario=user, senha=senha, playwright_instance=p) as erp:
                         erp.login_e_navegar_para_entrada()
                         notas_pendentes = obter_notas_pendentes(limite=limite)
                         for nota in notas_pendentes:
@@ -772,10 +776,11 @@ class App(tk.Tk):
     def _executar_apenas_zap(self):
         self._salvar_configuracoes_interface()
         ignorar = self.var_whatsapp_ignorar.get().strip()
+        headless = not self.var_modo_teste.get()
 
         def zap():
             print("[Painel] Verificando novas mensagens no WhatsApp Web...")
-            etapa_capturar_whatsapp(chats_ignorar=ignorar)
+            etapa_capturar_whatsapp(chats_ignorar=ignorar, headless=headless)
             print("[Painel] Verificação do WhatsApp concluída.")
 
         self._iniciar_tarefa(zap, "Lendo WhatsApp...")
@@ -786,10 +791,11 @@ class App(tk.Tk):
         user = self.var_erp_usuario.get().strip()
         senha = self.var_erp_senha.get().strip()
         limite = self.var_limite_notas.get()
+        headless = not self.var_modo_teste.get()
 
         def erp():
             print(f"[Painel] Lançando notas pendentes no ERP ({url})...")
-            with ERPLancador(url=url, usuario=user, senha=senha) as erp_inst:
+            with ERPLancador(headless=headless, url=url, usuario=user, senha=senha) as erp_inst:
                 erp_inst.login_e_navegar_para_entrada()
                 notas_pendentes = obter_notas_pendentes(limite=limite)
                 if not notas_pendentes:
