@@ -547,12 +547,22 @@ class WhatsAppMonitor:
             alvo.scroll_into_view_if_needed()
             time.sleep(0.3)
 
-            # Tenta hover no balão interno (e depois no container) para exibir o botão Reagir
+            # Move o ponteiro para o canto antes para limpar tooltips residuais de reações anteriores
+            try:
+                self.page.mouse.move(10, 10)
+            except Exception:
+                pass
+
+            # Tenta hover no balão interno (com fallback force=True se algum overlay interceptar)
             bolha_interna = alvo.locator("div[data-pre-plain-text], span.selectable-text").first
-            if bolha_interna.count() > 0:
-                bolha_interna.hover()
-            else:
-                alvo.hover()
+            alvo_hover = bolha_interna if bolha_interna.count() > 0 else alvo
+            try:
+                alvo_hover.hover(timeout=5000)
+            except Exception:
+                try:
+                    alvo_hover.hover(force=True, timeout=3000)
+                except Exception:
+                    pass
             time.sleep(0.6)
 
             seletores_react = (
@@ -570,8 +580,7 @@ class WhatsAppMonitor:
             else:
                 # Plano B: clique com botão direito no balão -> "Reagir"
                 try:
-                    alvo_ctx = bolha_interna if bolha_interna.count() > 0 else alvo
-                    alvo_ctx.click(button="right", timeout=5000)
+                    alvo_hover.click(button="right", force=True, timeout=5000)
                     time.sleep(0.5)
                     item_reagir = self.page.locator(
                         "[role='menuitem']:has-text('Reagir'), div[aria-label='Reagir'], li:has-text('Reagir')"
@@ -596,6 +605,10 @@ class WhatsAppMonitor:
             )
             if emoji_joinha.count() > 0 and emoji_joinha.last.is_visible():
                 emoji_joinha.last.click(timeout=5000)
+                try:
+                    self.page.mouse.move(10, 10)
+                except Exception:
+                    pass
                 print(f"[WhatsApp] 👍 Reação adicionada na mensagem da NF {numero_nota}!")
                 return True
 
