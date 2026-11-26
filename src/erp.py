@@ -62,10 +62,17 @@ class ERPLancador:
             "--no-default-browser-check",
             "--disable-infobars",
         ]
+        user_agent_desktop = (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        )
         self.context = self._playwright.chromium.launch_persistent_context(
             user_data_dir=str(ERP_SESSION_DIR),
             headless=self.headless,
             viewport={"width": 1366, "height": 850},
+            user_agent=user_agent_desktop,
+            locale="pt-BR",
             args=args,
         )
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()

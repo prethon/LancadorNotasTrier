@@ -67,10 +67,17 @@ class WhatsAppMonitor:
             "--no-default-browser-check",
             "--disable-infobars",
         ]
+        user_agent_desktop = (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        )
         self.context = self._playwright.chromium.launch_persistent_context(
             user_data_dir=str(WHATSAPP_SESSION_DIR),
             headless=self.headless,
             viewport={"width": 1280, "height": 800},
+            user_agent=user_agent_desktop,
+            locale="pt-BR",
             args=args,
         )
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
@@ -84,6 +91,7 @@ class WhatsAppMonitor:
         seletor_qrcode = "canvas[aria-label='Scan me!'], div[data-ref]"
 
         tempo_inicial = time.time()
+        ultimo_aviso = tempo_inicial
         print("[WhatsApp] Verificando sessão...")
 
         while time.time() - tempo_inicial < timeout_login:
@@ -99,6 +107,18 @@ class WhatsAppMonitor:
                     print("[WhatsApp] Aguardando escaneamento do QR Code no navegador aberto...")
                 time.sleep(3)
                 continue
+
+            agora = time.time()
+            if agora - ultimo_aviso >= 15:
+                ultimo_aviso = agora
+                try:
+                    txt_body = self.page.inner_text("body")[:200].replace("\n", " ").strip()
+                    if "google chrome" in txt_body.lower() or "atualize" in txt_body.lower():
+                        print(f"[WhatsApp] ⚠️ Aviso do navegador: {txt_body}")
+                    else:
+                        print("[WhatsApp] Ainda carregando WhatsApp Web em segundo plano...")
+                except Exception:
+                    print("[WhatsApp] Ainda carregando WhatsApp Web em segundo plano...")
 
             time.sleep(1)
 
