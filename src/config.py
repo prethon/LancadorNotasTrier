@@ -29,6 +29,7 @@ INTERVALO_MONITORAMENTO_SEGUNDOS = int(os.getenv("INTERVALO_MONITORAMENTO_SEGUND
 
 # Configurações do WhatsApp Web
 WHATSAPP_CHAT_ALVO = os.getenv("WHATSAPP_CHAT_ALVO", "").strip()
+WHATSAPP_IGNORAR = os.getenv("WHATSAPP_IGNORAR", "").strip()
 WHATSAPP_ALERTA = os.getenv("WHATSAPP_ALERTA", "").strip()
 
 # Configurações do ERP
