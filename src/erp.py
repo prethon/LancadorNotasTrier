@@ -11,7 +11,7 @@ from .config import (
     ERROS_PRINTS_DIR,
     MODO_TESTE,
 )
-from .database import atualizar_status_nota, registrar_falha_lancamento
+from .database import atualizar_status_nota, registrar_falha_lancamento, obter_nota_por_id
 from .reporter import (
     registrar_nota_lancada,
     registrar_duplicidade,
@@ -423,6 +423,10 @@ class ERPLancador:
     def lancar_nota(self, id_unico: str, numero_nota: str, origem_contato: str) -> Dict[str, Any]:
         """Fluxo inteligente com auto-recuperação de sessão, duplicidade e auditoria financeira."""
         self.dialog_mensagem = None
+        nota_info = obter_nota_por_id(id_unico)
+        eh_recheck_duplicidade = bool(nota_info and nota_info.get("status") == "verificar_duplicidade")
+        msg_recheck = (nota_info.get("mensagem_erro") or "") if nota_info else ""
+        status_original_recheck = "lancado" if msg_recheck.endswith(":lancado") else "duplicada_erp"
         print(f"\n[ERP] Iniciando processamento da NF: {numero_nota} (Origem: {origem_contato})...")
 
         # Auto-recuperação de sessão caso tenha expirado
@@ -516,6 +520,11 @@ class ERPLancador:
 
                 if nota_encontrada_em_importadas:
                     msg = f"Nota {numero_nota} já consta na aba de Importadas no ERP (Duplicidade)"
+                    if eh_recheck_duplicidade:
+                        print(f"[ERP - Duplicidade Confirmada] {msg} (preservando status '{status_original_recheck}').")
+                        atualizar_status_nota(id_unico, status_original_recheck, None)
+                        registrar_duplicidade(numero_nota, origem_contato, "Nota já lançada no ERP (confirmada ao reenviar no WhatsApp)")
+                        return {"status": "duplicada_erp", "mensagem": msg}
                     return self._marcar_duplicidade(id_unico, numero_nota, origem_contato, msg)
                 else:
                     msg = f"Nota {numero_nota} não foi localizada no sistema (nem em Não Importadas, nem em Importadas)"
@@ -549,9 +558,16 @@ class ERPLancador:
                     break
                 time.sleep(0.5)
 
-            # 7. Tratar quadro interno (iframe) - lê resumo antes e depois de Continuar [F2]
+            # 7. Lê o Resumo de Importação ANTES de clicar em Continuar [F2] (captura rejeições imediatas)
+            importacao_confirmada_antes = False
             if self.page.locator("iframe").count() > 0:
                 print("[ERP] Processando quadro interno (iframe)...")
+                estado_antes = self._inspecionar_estado_importacao(max_tentativas=4, espera_s=0.6)
+                rejeicao_antes = self._tratar_rejeicao_importacao(estado_antes, id_unico, numero_nota, origem_contato)
+                if rejeicao_antes is not None:
+                    return rejeicao_antes
+                importacao_confirmada_antes = estado_antes["importacao_confirmada"]
+
                 try:
                     for idx_f in range(self.page.locator("iframe").count() - 1, -1, -1):
                         frame = self.page.frame_locator("iframe").nth(idx_f)
@@ -564,78 +580,19 @@ class ERPLancador:
                 except Exception as err_frame:
                     print(f"[ERP] Aviso ao processar iframe: {err_frame}")
 
-            # 8. LEITURA E VALIDAÇÃO DA TELA DE RESUMO DE IMPORTAÇÃO (aguarda confirmação real ou rejeição)
+            # 8. LEITURA E VALIDAÇÃO PÓS-CONTINUAR (aguarda confirmação real, Cad_0160 ou rejeição)
             print("[ERP] Analisando tela de resumo de importação...")
+            estado_depois = self._inspecionar_estado_importacao(max_tentativas=10, espera_s=0.8)
+            if importacao_confirmada_antes and not estado_depois["importacao_confirmada"]:
+                estado_depois["importacao_confirmada"] = True
 
-            frases_erro_especificas = [
-                "NÃO PODE SER ENCONTRADO NO CADASTRO DE PRODUTOS",
-                "NAO PODE SER ENCONTRADO NO CADASTRO DE PRODUTOS",
-                "NÃO ENCONTRADO NO CADASTRO DE PRODUTOS",
-                "NAO ENCONTRADO NO CADASTRO DE PRODUTOS",
-            ]
-            indicadores_cad0160 = (
-                "LANÇAMENTO CONTAS A PAGAR",
-                "LANCAMENTO CONTAS A PAGAR",
-                "CAD_0160]",
-                "TOTAL DUPLICATAS",
-                "COM CONTAS A PAGAR",
-                "SEM CONTAS A PAGAR",
-            )
+            rejeicao_depois = self._tratar_rejeicao_importacao(estado_depois, id_unico, numero_nota, origem_contato)
+            if rejeicao_depois is not None:
+                return rejeicao_depois
 
-            texto_completo = ""
-            importacao_confirmada = False
-            cad0160_detectado = False
-            resumo_rejeitou = False
-            erro_produto_detectado = False
-
-            for tentativa_tela in range(10):
-                texto_completo = self._coletar_textos_tela_e_iframes().upper()
-                importacao_confirmada = bool(
-                    re.search(r"NOTAS\s+IMPORTADAS\s*:?\s*[1-9]\d*\b", texto_completo)
-                    or re.search(r"TOTAL\s+(?:DE\s+)?(?:NOTAS\s+)?IMPORTADAS\s*:?\s*[1-9]\d*\b", texto_completo)
-                )
-                cad0160_detectado = any(ind in texto_completo for ind in indicadores_cad0160)
-                resumo_rejeitou = bool(
-                    re.search(r"NOTAS\s+N[ÃA]O\s+IMPORTADAS\s*:?\s*[1-9]\d*\b", texto_completo)
-                    and re.search(r"NOTAS\s+IMPORTADAS\s*:?\s*0\b", texto_completo)
-                )
-                erro_produto_detectado = any(ind in texto_completo for ind in frases_erro_especificas)
-
-                if importacao_confirmada or cad0160_detectado or erro_produto_detectado or resumo_rejeitou:
-                    break
-                if tentativa_tela < 9:
-                    time.sleep(0.8)
-
-            # Produto sem cadastro confirmado
-            if (erro_produto_detectado or (resumo_rejeitou and "CADASTRO DE PRODUTOS" in texto_completo)) and not importacao_confirmada:
-                detalhe = "Produtos não encontrados no cadastro do ERP (Importação Abortada)"
-                match_obs = re.search(r"(NOTA \d+\s*:\s*O ITEM [^\n\r]+)", texto_completo)
-                if match_obs:
-                    detalhe = match_obs.group(1).strip()
-                elif "CADASTRO DE PRODUTOS" in texto_completo:
-                    detalhe = "Existem itens que não foram encontrados no cadastro de produtos."
-
-                print(f"[ERP - Identificado] {detalhe}")
-                self._fechar_iframe_ou_sair()
-                return self._marcar_produto_sem_cadastro(id_unico, numero_nota, origem_contato, detalhe)
-
-            # Outra rejeição explícita no resumo (Notas não importadas >= 1 e Notas importadas == 0 sem ser cadastro)
-            if resumo_rejeitou and not importacao_confirmada:
-                obs_match = re.search(r"OBSERVA[ÇC][ÕO]ES DA NOTA SELECIONADA\s*([\s\S]{1,220})", texto_completo)
-                motivo_resumo = (
-                    " ".join(obs_match.group(1).split())[:180]
-                    if obs_match
-                    else "Resumo de importação retornou Notas importadas = 0"
-                )
-                print(f"[ERP - Importação Recusada] {motivo_resumo}")
-                self._salvar_screenshot_erro(numero_nota)
-                self._fechar_iframe_ou_sair()
-                novo_status, tentativa_atual = registrar_falha_lancamento(
-                    id_unico, motivo_resumo, max_tentativas=3
-                )
-                if novo_status == "erro":
-                    registrar_outro_erro(numero_nota, origem_contato, motivo_resumo)
-                return {"status": novo_status, "mensagem": motivo_resumo}
+            texto_completo = estado_depois["texto"]
+            importacao_confirmada = estado_depois["importacao_confirmada"]
+            cad0160_detectado = estado_depois["cad0160_detectado"]
 
             # 9. AUDITORIA FINANCEIRA DA TELA DE CONTAS A PAGAR (CAD_0160)
             res_financeiro = self._analisar_contas_a_pagar(numero_nota)
@@ -895,26 +852,146 @@ class ERPLancador:
             return True
 
     def _coletar_textos_tela_e_iframes(self) -> str:
-        """Agrega texto visível do body principal, todos os iframes abertos e último alerta nativo."""
+        """
+        Agrega texto visível de todos os frames (priorizando modais/iframes internos à frente
+        do menu principal), incluindo valores de <textarea> e último alerta nativo.
+        """
         partes = []
+        frames_lidos = False
         try:
-            partes.append(self.page.inner_text("body"))
+            frames = list(self.page.frames or [])
+            if frames:
+                ordenados = list(reversed(frames[1:])) + [frames[0]]
+                for f in ordenados:
+                    try:
+                        txt = f.evaluate("""() => {
+                            const out = [];
+                            if (document.body && document.body.innerText) out.push(document.body.innerText);
+                            document.querySelectorAll('textarea').forEach(el => {
+                                if (el.value && el.value.trim()) out.push(el.value.trim());
+                            });
+                            return out.join('\\n');
+                        }""")
+                        if txt and txt.strip():
+                            partes.append(txt.strip())
+                    except Exception:
+                        continue
+                frames_lidos = bool(partes)
         except Exception:
             pass
-        try:
-            total_iframes = self.page.locator("iframe").count()
-            for idx_f in range(total_iframes):
-                try:
-                    frame = self.page.frame_locator("iframe").nth(idx_f)
-                    if frame.locator("body").count() > 0:
-                        partes.append(frame.locator("body").inner_text(timeout=1500))
-                except Exception:
-                    continue
-        except Exception:
-            pass
+
+        if not frames_lidos:
+            try:
+                total_iframes = self.page.locator("iframe").count()
+                for idx_f in range(total_iframes - 1, -1, -1):
+                    try:
+                        frame = self.page.frame_locator("iframe").nth(idx_f)
+                        if frame.locator("body").count() > 0:
+                            partes.append(frame.locator("body").inner_text(timeout=1500))
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            try:
+                partes.append(self.page.inner_text("body"))
+            except Exception:
+                pass
+
         if self.dialog_mensagem:
             partes.append(f"ALERTA_DIALOG: {self.dialog_mensagem}")
         return "\n".join(partes)
+
+    def _inspecionar_estado_importacao(self, max_tentativas: int = 10, espera_s: float = 0.8) -> Dict[str, Any]:
+        """Faz polling dos frames abertos detectando confirmação, Cad_0160 ou rejeição no resumo."""
+        frases_erro_especificas = (
+            "NÃO PODE SER ENCONTRADO NO CADASTRO DE PRODUTOS",
+            "NAO PODE SER ENCONTRADO NO CADASTRO DE PRODUTOS",
+            "NÃO ENCONTRADO NO CADASTRO DE PRODUTOS",
+            "NAO ENCONTRADO NO CADASTRO DE PRODUTOS",
+        )
+        indicadores_cad0160 = (
+            "LANÇAMENTO CONTAS A PAGAR",
+            "LANCAMENTO CONTAS A PAGAR",
+            "CAD_0160]",
+            "TOTAL DUPLICATAS",
+            "COM CONTAS A PAGAR",
+            "SEM CONTAS A PAGAR",
+        )
+
+        estado = {
+            "texto": "",
+            "importacao_confirmada": False,
+            "cad0160_detectado": False,
+            "resumo_rejeitou": False,
+            "erro_produto_detectado": False,
+        }
+
+        for tentativa in range(max_tentativas):
+            texto_completo = self._coletar_textos_tela_e_iframes().upper()
+            importacao_confirmada = bool(
+                re.search(r"NOTAS\s+IMPORTADAS\s*:?\s*[1-9]\d*\b", texto_completo)
+                or re.search(r"TOTAL\s+(?:DE\s+)?(?:NOTAS\s+)?IMPORTADAS\s*:?\s*[1-9]\d*\b", texto_completo)
+            )
+            cad0160_detectado = any(ind in texto_completo for ind in indicadores_cad0160)
+            resumo_rejeitou = bool(
+                re.search(r"NOTAS\s+N[ÃA]O\s+IMPORTADAS\s*:?\s*[1-9]\d*\b", texto_completo)
+                and re.search(r"NOTAS\s+IMPORTADAS\s*:?\s*0\b", texto_completo)
+            )
+            erro_produto_detectado = any(ind in texto_completo for ind in frases_erro_especificas)
+
+            estado = {
+                "texto": texto_completo,
+                "importacao_confirmada": importacao_confirmada,
+                "cad0160_detectado": cad0160_detectado,
+                "resumo_rejeitou": resumo_rejeitou,
+                "erro_produto_detectado": erro_produto_detectado,
+            }
+            if importacao_confirmada or cad0160_detectado or erro_produto_detectado or resumo_rejeitou:
+                break
+            if tentativa < max_tentativas - 1:
+                time.sleep(espera_s)
+
+        return estado
+
+    def _tratar_rejeicao_importacao(
+        self, estado: Dict[str, Any], id_unico: str, numero_nota: str, origem_contato: str
+    ) -> Optional[Dict[str, Any]]:
+        """Classifica e encerra o lançamento se o resumo indicar produto sem cadastro ou rejeição."""
+        if estado["importacao_confirmada"]:
+            return None
+
+        texto_completo = estado["texto"]
+        resumo_rejeitou = estado["resumo_rejeitou"]
+        erro_produto = estado["erro_produto_detectado"]
+
+        if erro_produto or (resumo_rejeitou and "CADASTRO DE PRODUTOS" in texto_completo):
+            detalhe = "Produtos não encontrados no cadastro do ERP (Importação Abortada)"
+            match_obs = re.search(r"(NOTA \d+\s*:\s*O ITEM [^\n\r]+)", texto_completo)
+            if match_obs:
+                detalhe = match_obs.group(1).strip()
+            elif "CADASTRO DE PRODUTOS" in texto_completo:
+                detalhe = "Existem itens que não foram encontrados no cadastro de produtos."
+
+            print(f"[ERP - Identificado] {detalhe}")
+            self._fechar_iframe_ou_sair()
+            return self._marcar_produto_sem_cadastro(id_unico, numero_nota, origem_contato, detalhe)
+
+        if resumo_rejeitou:
+            obs_match = re.search(r"OBSERVA[ÇC][ÕO]ES DA NOTA SELECIONADA\s*([\s\S]{1,220})", texto_completo)
+            motivo_resumo = (
+                " ".join(obs_match.group(1).split())[:180]
+                if obs_match
+                else "Resumo de importação retornou Notas importadas = 0"
+            )
+            print(f"[ERP - Importação Recusada] {motivo_resumo}")
+            self._salvar_screenshot_erro(numero_nota)
+            self._fechar_iframe_ou_sair()
+            novo_status, _ = registrar_falha_lancamento(id_unico, motivo_resumo, max_tentativas=3)
+            if novo_status == "erro":
+                registrar_outro_erro(numero_nota, origem_contato, motivo_resumo)
+            return {"status": novo_status, "mensagem": motivo_resumo}
+
+        return None
 
     def _confirmar_nota_importada_no_erp(self, numero_nota: str) -> Optional[bool]:
         """

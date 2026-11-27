@@ -33,6 +33,7 @@ from src.database import (
     gerar_id_unico,
     get_connection,
     reprocessar_erros,
+    reabrir_nota_por_numero,
 )
 from src.erp import ERPLancador
 from src.whatsapp import WhatsAppMonitor
@@ -348,6 +349,18 @@ class App(tk.Tk):
         )
         self.btn_testar_nota.pack(side=tk.LEFT)
 
+        self.btn_reabrir_nota = tk.Button(
+            frame_opcoes,
+            text="♻️ Reabrir",
+            bg="#6c757d",
+            fg="white",
+            font=("Arial", 9, "bold"),
+            padx=6,
+            pady=1,
+            command=self._reabrir_nota_manual,
+        )
+        self.btn_reabrir_nota.pack(side=tk.LEFT, padx=(4, 0))
+
         # 4. Painel de Métricas e Relatórios (Linha Única com 7 Cartões)
         frame_metricas = ttk.LabelFrame(self, text=" Métricas em Tempo Real & Relatórios ", padding=6)
         frame_metricas.pack(fill=tk.X, padx=15, pady=(0, 4))
@@ -607,7 +620,7 @@ class App(tk.Tk):
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("DELETE FROM notas WHERE status NOT IN ('pendente', 'aguardando_retry', 'lancado')")
+                cursor.execute("DELETE FROM notas WHERE status NOT IN ('pendente', 'aguardando_retry', 'verificar_duplicidade', 'lancado')")
                 conn.commit()
         except Exception as e:
             print(f"[Painel] Aviso ao limpar banco: {e}")
@@ -719,6 +732,20 @@ class App(tk.Tk):
 
         self.thread_execucao = threading.Thread(target=worker, daemon=True)
         self.thread_execucao.start()
+
+    def _reabrir_nota_manual(self):
+        numero = self.var_nota_teste.get().strip()
+        if not numero:
+            messagebox.showwarning("Atenção", "Digite o número da nota que deseja reabrir na fila!")
+            return
+        qtd = reabrir_nota_por_numero(numero)
+        self._atualizar_metricas()
+        print(f"[Painel] NF {numero} recolocada na fila ({qtd} registro(s)).")
+        messagebox.showinfo(
+            "Reabrir Nota",
+            f"A NF {numero} foi colocada como pendente na fila ({qtd} registro(s))!\n"
+            "Ela será processada automaticamente no próximo ciclo.",
+        )
 
     def _executar_teste_nota_manual(self):
         numero = self.var_nota_teste.get().strip()
@@ -1011,7 +1038,11 @@ class App(tk.Tk):
     def _atualizar_metricas(self):
         try:
             stats = obter_resumo_estatisticas()
-            total_pendentes = stats.get("pendente", 0) + stats.get("aguardando_retry", 0)
+            total_pendentes = (
+                stats.get("pendente", 0)
+                + stats.get("aguardando_retry", 0)
+                + stats.get("verificar_duplicidade", 0)
+            )
             self.card_pendentes.config(text=str(total_pendentes))
             self.card_lancadas.config(text=str(stats.get("lancado", 0)))
             tot_duplicadas = max(
@@ -1038,6 +1069,10 @@ class App(tk.Tk):
                     prox_tentativa = min(int(nota.get("tentativas") or 1) + 1, 3)
                     self.list_pendentes.insert(
                         tk.END, f"• NF {num}  (Tentativa {prox_tentativa}/3 - {origem})"
+                    )
+                elif nota.get("status") == "verificar_duplicidade":
+                    self.list_pendentes.insert(
+                        tk.END, f"• NF {num}  (Conferindo ERP - {origem})"
                     )
                 else:
                     self.list_pendentes.insert(tk.END, f"• NF {num}  ({origem})")

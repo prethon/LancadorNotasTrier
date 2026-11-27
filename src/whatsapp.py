@@ -13,7 +13,7 @@ from .config import (
     DATA_DIR,
 )
 from .extractor import extrair_numeros_notas
-from .database import inserir_nota, obter_status_nota
+from .database import inserir_nota, obter_status_nota, agendar_verificacao_duplicidade
 from .reporter import registrar_duplicidade
 
 CHECKPOINT_FILE = DATA_DIR / "whatsapp_checkpoint.json"
@@ -472,9 +472,13 @@ class WhatsAppMonitor:
                         else:
                             status_atual = obter_status_nota(origem_especifica, num)
                             if status_atual in ("lancado", "duplicada_erp"):
-                                msg_dup = "Nota já lançada anteriormente (reenviada no WhatsApp)"
-                                registrar_duplicidade(num, origem_especifica, msg_dup)
-                                print(f"  -> [DUPLICIDADE] Nº {num} ({origem_especifica}) já lançada antes. Registrada em duplicidades.csv.")
+                                status_ant = agendar_verificacao_duplicidade(origem_especifica, num)
+                                if status_ant:
+                                    print(f"  -> [REENVIO DETECTADO] Nº {num} ({origem_especifica}) estava como '{status_ant}'; agendada conferência real no ERP.")
+                                else:
+                                    msg_dup = "Nota já lançada anteriormente (reenviada no WhatsApp)"
+                                    registrar_duplicidade(num, origem_especifica, msg_dup)
+                                    print(f"  -> [DUPLICIDADE] Nº {num} ({origem_especifica}) já lançada antes. Registrada em duplicidades.csv.")
                             else:
                                 print(f"  -> [INFO] Nº {num} ({origem_especifica}) já estava no banco de dados (status: {status_atual}).")
 
@@ -558,7 +562,7 @@ class WhatsAppMonitor:
             checkpoint = {
                 "criado_em": time.time(),
                 "ultimo_id_processado": ultimo_id,
-                "ids_processados": ids_historico[-500:],
+                "ids_processados": ids_historico[-1500:],
             }
             self._salvar_dados_checkpoint(checkpoint)
             print("[WhatsApp] 🚀 Marco zero definido! Mensagens anteriores ignoradas; monitorando apenas novas mensagens.")
@@ -731,7 +735,7 @@ class WhatsAppMonitor:
         if todos_novos_ids:
             lista_atual = checkpoint.get("ids_processados", [])
             lista_atual.extend(todos_novos_ids)
-            checkpoint["ids_processados"] = lista_atual[-500:]
+            checkpoint["ids_processados"] = lista_atual[-1500:]
             checkpoint["ultimo_id_processado"] = todos_novos_ids[-1]
             checkpoint["atualizado_em"] = time.time()
             self._salvar_dados_checkpoint(checkpoint)

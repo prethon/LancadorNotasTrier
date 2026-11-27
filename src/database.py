@@ -88,13 +88,87 @@ def obter_status_nota(origem_contato: str, numero_nota: str) -> Optional[str]:
         return row["status"] if row else None
 
 
+def obter_nota_por_id(id_unico: str) -> Optional[Dict[str, Any]]:
+    """Retorna o registro completo da nota pelo id_unico, ou None."""
+    init_db()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM notas WHERE id_unico = ?", (id_unico,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def agendar_verificacao_duplicidade(origem_contato: str, numero_nota: str) -> Optional[str]:
+    """
+    Quando uma nota marcada como 'lancado' ou 'duplicada_erp' é reenviada no WhatsApp,
+    agenda status 'verificar_duplicidade' para conferência real no ERP (sem perder o status original).
+    Retorna o status anterior caso agendado, ou None se não aplicável.
+    """
+    init_db()
+    id_unico = gerar_id_unico(origem_contato, numero_nota)
+    agora = datetime.now().isoformat()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT status FROM notas WHERE id_unico = ?", (id_unico,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        status_ant = row["status"]
+        if status_ant not in ("lancado", "duplicada_erp"):
+            return None
+        cursor.execute(
+            """
+            UPDATE notas
+            SET status = 'verificar_duplicidade',
+                mensagem_erro = ?,
+                atualizado_em = ?
+            WHERE id_unico = ?
+            """,
+            (f"recheck_duplicidade:{status_ant}", agora, id_unico),
+        )
+        conn.commit()
+        return status_ant
+
+
+def reabrir_nota_por_numero(numero_nota: str) -> int:
+    """
+    Recoloca todas as ocorrências de uma NF específica na fila como 'pendente' (zerando tentativas).
+    Se não existir no banco local, insere uma nova entrada com origem 'Painel_Manual'.
+    Retorna a quantidade de registros colocados na fila.
+    """
+    init_db()
+    num_limpo = numero_nota.strip()
+    if not num_limpo:
+        return 0
+    agora = datetime.now().isoformat()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE notas
+            SET status = 'pendente',
+                tentativas = 0,
+                mensagem_erro = NULL,
+                atualizado_em = ?
+            WHERE numero_nota = ?
+            """,
+            (agora, num_limpo),
+        )
+        atualizados = cursor.rowcount
+        conn.commit()
+    if atualizados == 0:
+        inserir_nota(numero_nota=num_limpo, origem_contato="Painel_Manual")
+        return 1
+    return atualizados
+
+
 def obter_notas_pendentes(
     limite: Optional[int] = None,
     incluir_em_cooldown: bool = False,
     cooldown_segundos: int = 30,
 ) -> List[Dict[str, Any]]:
     """
-    Obtém as notas pendentes (ou aguardando retry após cooldown) de lançamento.
+    Obtém as notas pendentes, em verificação de reenvio ou aguardando retry após cooldown.
     Por padrão filtra notas em 'aguardando_retry' cujo cooldown ainda não expirou.
     """
     init_db()
@@ -103,17 +177,25 @@ def obter_notas_pendentes(
         if incluir_em_cooldown:
             query = """
                 SELECT * FROM notas
-                WHERE status IN ('pendente', 'aguardando_retry')
-                ORDER BY CASE WHEN status = 'pendente' THEN 0 ELSE 1 END, criado_em ASC
+                WHERE status IN ('pendente', 'verificar_duplicidade', 'aguardando_retry')
+                ORDER BY CASE
+                    WHEN status = 'pendente' THEN 0
+                    WHEN status = 'verificar_duplicidade' THEN 1
+                    ELSE 2
+                END, criado_em ASC
             """
             params: List[Any] = []
         else:
             cutoff_iso = (datetime.now() - timedelta(seconds=cooldown_segundos)).isoformat()
             query = """
                 SELECT * FROM notas
-                WHERE status = 'pendente'
+                WHERE status IN ('pendente', 'verificar_duplicidade')
                    OR (status = 'aguardando_retry' AND atualizado_em <= ?)
-                ORDER BY CASE WHEN status = 'pendente' THEN 0 ELSE 1 END, criado_em ASC
+                ORDER BY CASE
+                    WHEN status = 'pendente' THEN 0
+                    WHEN status = 'verificar_duplicidade' THEN 1
+                    ELSE 2
+                END, criado_em ASC
             """
             params = [cutoff_iso]
 
@@ -131,7 +213,7 @@ def atualizar_status_nota(
 ) -> None:
     """
     Atualiza o status da nota e incrementa tentativas em caso de erro.
-    Status válidos: 'pendente', 'aguardando_retry', 'lancado', 'duplicada_erp', 'produto_sem_cadastro', 'nota_inexistente', 'erro'
+    Status válidos: 'pendente', 'verificar_duplicidade', 'aguardando_retry', 'lancado', 'duplicada_erp', 'produto_sem_cadastro', 'nota_inexistente', 'erro'
     """
     init_db()
     agora = datetime.now().isoformat()
