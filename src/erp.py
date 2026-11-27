@@ -552,10 +552,24 @@ class ERPLancador:
             print("[ERP] Clicando em Importar [F2]...")
             self.page.get_by_role("button", name="Importar [F2]").first.click()
 
-            # Aguarda até 8s pelo carregamento do iframe interno
-            for _ in range(16):
-                if self.page.locator("iframe").count() > 0:
-                    break
+            # Aguarda até 25s pelo carregamento completo do iframe interno (sai assim que renderizar conteúdo/botão)
+            for _ in range(50):
+                qtd_iframes = self.page.locator("iframe").count()
+                if qtd_iframes > 0:
+                    pronto = False
+                    for idx_f in range(qtd_iframes - 1, -1, -1):
+                        try:
+                            fr = self.page.frame_locator("iframe").nth(idx_f)
+                            if fr.get_by_role("button", name="Continuar [F2]").count() > 0:
+                                pronto = True
+                                break
+                            if fr.locator("body").count() > 0 and len(fr.locator("body").inner_text(timeout=500).strip()) > 20:
+                                pronto = True
+                                break
+                        except Exception:
+                            pass
+                    if pronto:
+                        break
                 time.sleep(0.5)
 
             # 7. Lê o Resumo de Importação ANTES de clicar em Continuar [F2] (captura rejeições imediatas)
@@ -604,6 +618,14 @@ class ERPLancador:
                 or res_financeiro.get("tela_financeira_aberta", False)
             )
             if not confirmada_diretamente:
+                # Releitura final antes do print caso um iframe tenha acabado de carregar tardiamente
+                estado_tardio = self._inspecionar_estado_importacao(max_tentativas=1, espera_s=0)
+                if estado_tardio["texto"].strip():
+                    texto_completo = estado_tardio["texto"]
+                rejeicao_tardia = self._tratar_rejeicao_importacao(estado_tardio, id_unico, numero_nota, origem_contato)
+                if rejeicao_tardia is not None:
+                    return rejeicao_tardia
+
                 print(
                     f"[ERP - Verificação] Importação da NF {numero_nota} sem confirmação visual direta. "
                     f"Validando status real no ERP..."
@@ -772,9 +794,11 @@ class ERPLancador:
                         "div.modal_container button:has-text('Sair'), div.modal_container button:has-text('Fechar'), "
                         "div.modal_container button:has-text('Close'), div.modal_container button[aria-label='Close'], "
                         "div.modal_container button:has-text('×'), "
-                        "div.modal_container input[value*='Sair'], div.modal_container input[value*='Fechar'], "
-                        "div.modal_container .modal_close, div.modal_container a[title*='Fechar'], "
-                        "div.modal_container span[title*='Fechar']",
+                        "div.modal_container a:has-text('Close'), div.modal_container span:has-text('Close'), "
+                        "div.modal_container a:has-text('×'), div.modal_container span:has-text('×'), "
+                        "div.modal_container [class*='close'], div.modal_container input[value*='Sair'], "
+                        "div.modal_container input[value*='Fechar'], div.modal_container .modal_close, "
+                        "div.modal_container a[title*='Fechar'], div.modal_container span[title*='Fechar']",
                     )
 
                 # 3. Tenta botão 'Sair [Esc]' na própria página
