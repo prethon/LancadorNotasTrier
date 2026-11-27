@@ -4,13 +4,16 @@ import time
 import queue
 import threading
 import subprocess
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 
 from playwright.sync_api import sync_playwright
 from src.config import (
     REPORTS_DIR,
+    LOGS_DIR,
     MODO_TESTE,
     LIMITE_NOTAS_POR_EXECUCAO,
     INTERVALO_MONITORAMENTO_SEGUNDOS,
@@ -44,15 +47,63 @@ from main import etapa_capturar_whatsapp, etapa_lancar_erp, etapa_confirmar_what
 
 
 class RedirecionadorTexto:
-    """Redireciona stdout e stderr para uma fila consumida com segurança pela GUI."""
-    def __init__(self, fila_texto: queue.Queue):
+    """Redireciona stdout e stderr para a GUI e persiste em arquivo diário rotativo."""
+    def __init__(self, fila_texto: queue.Queue, log_dir: Path = LOGS_DIR, dias_retencao: int = 15):
         self.fila_texto = fila_texto
+        self.log_dir = log_dir
+        self.dias_retencao = dias_retencao
+        self._lock = threading.Lock()
+        self._buffer_linha = ""
+        self._ultimo_dia_limpeza: Optional[str] = None
+
+    def _limpar_logs_antigos(self, hoje_str: str) -> None:
+        if self._ultimo_dia_limpeza == hoje_str:
+            return
+        self._ultimo_dia_limpeza = hoje_str
+        try:
+            limite = datetime.now() - timedelta(days=self.dias_retencao)
+            for arq in self.log_dir.glob("lancador_*.log"):
+                try:
+                    if datetime.fromtimestamp(arq.stat().st_mtime) < limite:
+                        arq.unlink()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _gravar_em_disco(self, texto: str) -> None:
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+            agora = datetime.now()
+            hoje_str = agora.strftime("%Y-%m-%d")
+            self._limpar_logs_antigos(hoje_str)
+
+            self._buffer_linha += texto
+            if "\n" not in self._buffer_linha:
+                return
+
+            linhas = self._buffer_linha.split("\n")
+            self._buffer_linha = linhas.pop()
+            caminho_log = self.log_dir / f"lancador_{hoje_str}.log"
+            hora_prefix = agora.strftime("%H:%M:%S")
+            with open(caminho_log, mode="a", encoding="utf-8") as f:
+                for linha in linhas:
+                    if linha:
+                        f.write(f"[{hora_prefix}] {linha}\n")
+                    else:
+                        f.write("\n")
+        except Exception:
+            pass
 
     def write(self, texto):
         self.fila_texto.put(texto)
+        with self._lock:
+            self._gravar_em_disco(str(texto))
 
     def flush(self):
-        pass
+        with self._lock:
+            if self._buffer_linha:
+                self._gravar_em_disco("\n")
 
 
 class App(tk.Tk):
@@ -726,80 +777,118 @@ class App(tk.Tk):
             if num_alerta:
                 print(f"[Painel] Notificações ativas para o WhatsApp: {num_alerta}")
 
-            with sync_playwright() as p:
-                # 1. Abre o WhatsApp uma única vez e mantém ativo na tela
-                with WhatsAppMonitor(
-                    headless=headless,
-                    playwright_instance=p,
-                    chats_ignorar=self.var_whatsapp_ignorar.get().strip(),
-                    chat_alvo=self.var_whatsapp_chat.get().strip(),
-                ) as zap:
-                    if not zap.abrir_e_garantir_login():
-                        print("[Painel] Não foi possível autenticar o WhatsApp Web. Abortando.")
-                        return
+            backup_inicial_feito = False
+            ultimo_backup = time.time()
 
-                    print("[Painel] WhatsApp Web conectado e pronto na tela.")
-
-                    # 2. Abre o ERP uma única vez, faz login e posiciona no Rec_1020
-                    with ERPLancador(headless=headless, url=url, usuario=user, senha=senha, playwright_instance=p) as erp:
-                        if erp.login_e_navegar_para_entrada():
-                            print("[Painel] ERP conectado e posicionado na tela Rec_1020.")
-                        else:
-                            print("[Painel - Aviso] ERP indisponível no início; o robô tentará reconectar nos próximos ciclos.")
-                        print("[Painel] 🚀 Automação pronta! WhatsApp e ERP sincronizados sem recarregar.")
-
-                        ultimo_backup = time.time()
-
-                        while not self.evento_parar.is_set():
-                            try:
-                                # Atualiza filtros caso o usuário tenha alterado na interface
-                                zap.chats_ignorar = self._ignorar_cache
-                                zap.chat_alvo = self._chat_alvo_cache
-
-                                # Auto-recuperação do ERP caso a sessão tenha expirado ou a rede tenha voltado
-                                erp_pronto = erp.verificar_ou_recuperar_sessao()
-
-                                # Varre novas mensagens no WhatsApp aberto
-                                zap.ler_mensagens_e_enfileirar()
-                                self.after(0, self._atualizar_metricas)
-
-                                # Processa notas pendentes diretamente no ERP já aberto
-                                if erp_pronto:
-                                    notas_pendentes = obter_notas_pendentes(limite=limite)
-                                    for nota in notas_pendentes:
+            try:
+                while not self.evento_parar.is_set():
+                    try:
+                        with sync_playwright() as p:
+                            # 1. Abre o WhatsApp uma única vez e mantém ativo na tela
+                            with WhatsAppMonitor(
+                                headless=headless,
+                                playwright_instance=p,
+                                chats_ignorar=self.var_whatsapp_ignorar.get().strip(),
+                                chat_alvo=self.var_whatsapp_chat.get().strip(),
+                            ) as zap:
+                                if not zap.abrir_e_garantir_login():
+                                    print("[Painel - Watchdog] WhatsApp não autenticou; nova tentativa em 15s...")
+                                    for _ in range(15):
                                         if self.evento_parar.is_set():
                                             break
+                                        time.sleep(1)
+                                    continue
 
-                                        num = nota["numero_nota"]
-                                        origem = nota["origem_contato"]
-                                        id_unico = nota["id_unico"]
+                                print("[Painel] WhatsApp Web conectado e pronto na tela.")
 
-                                        res = erp.lancar_nota(id_unico=id_unico, numero_nota=num, origem_contato=origem)
-                                        st = res.get("status", "")
-                                        self.after(0, self._atualizar_metricas)
+                                # 2. Abre o ERP uma única vez, faz login e posiciona no Rec_1020
+                                with ERPLancador(headless=headless, url=url, usuario=user, senha=senha, playwright_instance=p) as erp:
+                                    if erp.login_e_navegar_para_entrada():
+                                        print("[Painel] ERP conectado e posicionado na tela Rec_1020.")
+                                    else:
+                                        print("[Painel - Aviso] ERP indisponível no início; o robô tentará reconectar nos próximos ciclos.")
+                                    print("[Painel] 🚀 Automação pronta! WhatsApp e ERP sincronizados sem recarregar.")
 
-                                        # Se lançada com sucesso, reage com 👍 no WhatsApp já aberto
-                                        if st == "lancado":
-                                            try:
-                                                zap.reagir_mensagem_nota_lancada(num, origem_contato=origem)
-                                            except Exception as err_reagir:
-                                                print(f"[WhatsApp] Aviso ao reagir com 👍: {err_reagir}")
+                                    if not backup_inicial_feito:
+                                        executar_backup()
+                                        ultimo_backup = time.time()
+                                        backup_inicial_feito = True
 
-                                        # Dispara alerta de inconsistência/boleto se configurado
-                                        self._enviar_alertas_whatsapp(zap, num_alerta, res, num, origem)
+                                    while not self.evento_parar.is_set():
+                                        try:
+                                            # Atualiza filtros caso o usuário tenha alterado na interface
+                                            zap.chats_ignorar = self._ignorar_cache
+                                            zap.chat_alvo = self._chat_alvo_cache
 
-                                # Backup automático periódico a cada 6 horas
-                                if time.time() - ultimo_backup >= 21600:
-                                    executar_backup()
-                                    ultimo_backup = time.time()
+                                            # Auto-recuperação do ERP caso a sessão tenha expirado ou a rede tenha voltado
+                                            erp_pronto = erp.verificar_ou_recuperar_sessao()
 
-                            except Exception as err_ciclo:
-                                print(f"[Painel - Aviso] Falha temporária no ciclo (rede/ERP): {err_ciclo}. Tentando novamente em {intervalo}s...")
+                                            # Varre novas mensagens no WhatsApp aberto
+                                            zap.ler_mensagens_e_enfileirar()
+                                            self.after(0, self._atualizar_metricas)
 
-                            for _ in range(intervalo):
-                                if self.evento_parar.is_set():
-                                    break
-                                time.sleep(1)
+                                            # Processa notas pendentes diretamente no ERP já aberto
+                                            if erp_pronto:
+                                                notas_pendentes = obter_notas_pendentes(limite=limite)
+                                                for nota in notas_pendentes:
+                                                    if self.evento_parar.is_set():
+                                                        break
+
+                                                    num = nota["numero_nota"]
+                                                    origem = nota["origem_contato"]
+                                                    id_unico = nota["id_unico"]
+
+                                                    res = erp.lancar_nota(id_unico=id_unico, numero_nota=num, origem_contato=origem)
+                                                    st = res.get("status", "")
+                                                    self.after(0, self._atualizar_metricas)
+
+                                                    # Se lançada com sucesso, reage com 👍 no WhatsApp já aberto
+                                                    if st == "lancado":
+                                                        try:
+                                                            zap.reagir_mensagem_nota_lancada(num, origem_contato=origem)
+                                                        except Exception as err_reagir:
+                                                            print(f"[WhatsApp] Aviso ao reagir com 👍: {err_reagir}")
+
+                                                    # Dispara alerta de inconsistência/boleto se configurado
+                                                    self._enviar_alertas_whatsapp(zap, num_alerta, res, num, origem)
+
+                                            # Backup automático periódico a cada 6 horas
+                                            if time.time() - ultimo_backup >= 21600:
+                                                executar_backup()
+                                                ultimo_backup = time.time()
+
+                                        except Exception as err_ciclo:
+                                            msg_err_low = str(err_ciclo).lower()
+                                            if any(
+                                                k in msg_err_low
+                                                for k in (
+                                                    "browser has been closed",
+                                                    "connection closed while reading from the driver",
+                                                    "pipe closed",
+                                                    "epipe",
+                                                )
+                                            ):
+                                                print(f"[Painel - Watchdog] Navegador/driver caiu ({err_ciclo}). Reiniciando navegadores em 15s...")
+                                                break
+                                            print(f"[Painel - Aviso] Falha temporária no ciclo (rede/ERP): {err_ciclo}. Tentando novamente em {intervalo}s...")
+
+                                        for _ in range(intervalo):
+                                            if self.evento_parar.is_set():
+                                                break
+                                            time.sleep(1)
+
+                    except Exception as err_watchdog:
+                        if self.evento_parar.is_set():
+                            break
+                        print(f"[Painel - Watchdog] Falha crítica na sessão do navegador: {err_watchdog}. Reiniciando em 15s...")
+
+                    if not self.evento_parar.is_set():
+                        for _ in range(15):
+                            if self.evento_parar.is_set():
+                                break
+                            time.sleep(1)
+            finally:
+                executar_backup()
 
             print("[Painel] Monitoramento contínuo finalizado.")
 

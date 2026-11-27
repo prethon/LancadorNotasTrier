@@ -38,6 +38,7 @@ class WhatsAppMonitor:
         self.chat_alvo = WHATSAPP_CHAT_ALVO if chat_alvo is None else chat_alvo.strip()
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
+        self._ciclo_varredura = 0
 
     def _obter_lista_ignorados(self) -> List[str]:
         """Retorna a lista normalizada de nomes de grupos/chats a ignorar."""
@@ -498,17 +499,42 @@ class WhatsAppMonitor:
         except Exception:
             return None
 
+    def _garantir_sessao_ativa(self) -> bool:
+        """Verifica se o WhatsApp Web continua conectado (ou se caiu/pediu QR Code) e tenta recuperar."""
+        try:
+            if not self.page or self.page.is_closed():
+                print("[WhatsApp - Auto-Recuperação] 🔄 Janela do WhatsApp fechada detectada! Reabrindo...")
+                self.iniciar()
+                return self.abrir_e_garantir_login()
+
+            if self.page.locator("#pane-side, div[aria-label='Lista de conversas'], #main").count() > 0:
+                return True
+
+            if self.page.locator("canvas[aria-label='Scan me!'], div[data-ref]").count() > 0:
+                print("[WhatsApp - Alerta] ⚠️ Sessão desconectada (QR Code necessário)! Escaneie novamente para retomar a leitura.")
+                return False
+
+            print("[WhatsApp - Auto-Recuperação] 🔄 Lista de conversas ausente; recarregando WhatsApp Web...")
+            self.page.reload(wait_until="load", timeout=30000)
+            return self.abrir_e_garantir_login(timeout_login=45)
+        except Exception as err:
+            print(f"[WhatsApp - Auto-Recuperação] Falha ao validar sessão: {err}")
+            try:
+                self.iniciar()
+                return self.abrir_e_garantir_login(timeout_login=45)
+            except Exception:
+                return False
+
     def ler_mensagens_e_enfileirar(self) -> Tuple[int, List[str]]:
         """
         Varre TODAS as conversas com mensagens novas/não lidas (Multi-Lojas).
         Se várias lojas enviarem mensagens simultaneamente, abre cada uma
         e enfileira todas as notas no SQLite.
         """
-        if not self.page or self.page.is_closed():
-            print("[WhatsApp - Auto-Recuperação] 🔄 Janela do WhatsApp fechada detectada! Reabrindo...")
-            self.iniciar()
-            if not self.abrir_e_garantir_login():
-                return 0, []
+        if not self._garantir_sessao_ativa():
+            return 0, []
+
+        self._ciclo_varredura += 1
 
         self._fechar_modais_whatsapp()
         checkpoint = self._carregar_dados_checkpoint()
@@ -659,7 +685,42 @@ class WhatsAppMonitor:
                             print(f"[WhatsApp] Aviso ao processar conversa não lida: {err_chat}")
                             continue
 
-            # 3C. Se nenhum chat válido estava aberto e nenhum badge válido foi lido, abre o primeiro chat válido
+            # 3C. Varredura periódica de redundância nos 5 chats mais recentes do topo (a cada 3 ciclos)
+            # Garante leitura mesmo se alguém abrir a mensagem no celular e apagar a bolinha verde.
+            if self._ciclo_varredura % 3 == 0:
+                try:
+                    top_chats: List[str] = self.page.evaluate("""() => {
+                        const rows = Array.from(document.querySelectorAll("#pane-side div[role='row'], #pane-side div[role='listitem'], #pane-side div[data-testid='cell-frame-container']"));
+                        const comPos = rows.map(r => {
+                            const rect = r.getBoundingClientRect();
+                            const t = r.querySelector("span[title]");
+                            const nome = t ? (t.getAttribute("title") || t.textContent || "").trim() : "";
+                            return { nome, top: rect.top, height: rect.height };
+                        }).filter(x => x.nome && x.height > 0 && x.top >= 0);
+                        comPos.sort((a, b) => a.top - b.top);
+                        const unicos = [];
+                        for (const item of comPos) {
+                            if (!unicos.includes(item.nome)) unicos.push(item.nome);
+                            if (unicos.length >= 5) break;
+                        }
+                        return unicos;
+                    }""")
+                except Exception:
+                    top_chats = []
+
+                for nome_top in top_chats:
+                    try:
+                        if self._chat_esta_ignorado(nome_top) or nome_top.lower() in chats_lidos_no_ciclo:
+                            continue
+                        if self._clicar_chat_visivel_na_lista(nome_top):
+                            novas, ids = self._extrair_notas_do_chat_aberto(nome_top, checkpoint)
+                            todas_novas_notas.extend(novas)
+                            todos_novos_ids.extend(ids)
+                            chats_lidos_no_ciclo.add(nome_top.lower())
+                    except Exception:
+                        continue
+
+            # 3D. Se nenhum chat válido estava aberto e nenhum badge válido foi lido, abre o primeiro chat válido
             if not chats_lidos_no_ciclo and not chat_aberto:
                 nome_contato = self.selecionar_chat_alvo()
                 novas, ids = self._extrair_notas_do_chat_aberto(nome_contato, checkpoint)

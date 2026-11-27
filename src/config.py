@@ -7,7 +7,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Diretórios estruturais
 DATA_DIR = BASE_DIR / "data"
+LOGS_DIR = DATA_DIR / "logs"
 REPORTS_DIR = BASE_DIR / "reports"
+ERROS_PRINTS_DIR = REPORTS_DIR / "erros_prints"
 SESSIONS_DIR = BASE_DIR / "sessions"
 WHATSAPP_SESSION_DIR = SESSIONS_DIR / "whatsapp"
 ERP_SESSION_DIR = SESSIONS_DIR / "erp"
@@ -16,7 +18,7 @@ ERP_SESSION_DIR = SESSIONS_DIR / "erp"
 DB_PATH = DATA_DIR / "notas.db"
 
 # Garantir existência automática das pastas necessárias
-for directory in (DATA_DIR, REPORTS_DIR, SESSIONS_DIR, WHATSAPP_SESSION_DIR, ERP_SESSION_DIR):
+for directory in (DATA_DIR, LOGS_DIR, REPORTS_DIR, ERROS_PRINTS_DIR, SESSIONS_DIR, WHATSAPP_SESSION_DIR, ERP_SESSION_DIR):
     directory.mkdir(parents=True, exist_ok=True)
 
 # Carregar variáveis do .env (se existir)
@@ -39,6 +41,9 @@ ERP_SENHA = os.getenv("ERP_SENHA", "").strip()
 
 # Configurações de Atualização Automática (GitHub)
 GITHUB_REPO = os.getenv("GITHUB_REPO", "prethon/LancadorNotasTrier").strip()
+
+# Pasta espelho opcional para redundância externa de backups (ex: OneDrive / Google Drive / rede)
+BACKUP_ESPELHO_DIR = os.getenv("BACKUP_ESPELHO_DIR", "").strip()
 
 
 def salvar_env(novos_dados: dict) -> None:

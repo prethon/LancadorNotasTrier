@@ -6,16 +6,21 @@ from .config import DB_PATH
 
 
 def get_connection() -> sqlite3.Connection:
-    """Retorna uma conexão configurada com o SQLite."""
-    conn = sqlite3.connect(DB_PATH)
+    """Retorna uma conexão configurada com o SQLite (com timeout anti-lock)."""
+    conn = sqlite3.connect(DB_PATH, timeout=15.0)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_db() -> None:
-    """Cria a tabela de notas fiscais e índices caso não existam."""
+    """Cria a tabela de notas fiscais, índices e ativa modo WAL caso não existam."""
     with get_connection() as conn:
         cursor = conn.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+        except Exception:
+            pass
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS notas (

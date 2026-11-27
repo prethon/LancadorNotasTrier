@@ -1,5 +1,6 @@
 import re
 import time
+from datetime import datetime
 from typing import Dict, Any, Optional
 from playwright.sync_api import sync_playwright, BrowserContext, Page, Dialog
 from .config import (
@@ -7,6 +8,7 @@ from .config import (
     ERP_URL,
     ERP_USUARIO,
     ERP_SENHA,
+    ERROS_PRINTS_DIR,
     MODO_TESTE,
 )
 from .database import atualizar_status_nota, registrar_falha_lancamento
@@ -473,6 +475,15 @@ class ERPLancador:
                     except Exception:
                         pass
                     msg = f"Nota {num_str} não existe no ERP (não apareceu na lista de filtro ao digitar)."
+                    novo_status, tentativa_atual = registrar_falha_lancamento(
+                        id_unico, msg, max_tentativas=2
+                    )
+                    if novo_status == "aguardando_retry":
+                        print(
+                            f"[ERP - Nova Tentativa {tentativa_atual}/2] Nota {num_str} não apareceu no filtro; "
+                            f"nova checagem automática em ~30s."
+                        )
+                        return {"status": "aguardando_retry", "mensagem": msg}
                     return self._marcar_nota_inexistente(id_unico, num_str, origem_contato, msg)
 
             # 4. Consultar em 'Não Importadas'
@@ -501,10 +512,19 @@ class ERPLancador:
                     return self._marcar_duplicidade(id_unico, numero_nota, origem_contato, msg)
                 else:
                     msg = f"Nota {numero_nota} não foi localizada no sistema (nem em Não Importadas, nem em Importadas)"
-                    print(f"[ERP - Alerta] {msg}")
-                    atualizar_status_nota(id_unico, "erro", msg)
-                    registrar_outro_erro(numero_nota, origem_contato, msg)
-                    return {"status": "erro", "mensagem": msg}
+                    novo_status, tentativa_atual = registrar_falha_lancamento(
+                        id_unico, msg, max_tentativas=3
+                    )
+                    if novo_status == "aguardando_retry":
+                        print(
+                            f"[ERP - Nova Tentativa {tentativa_atual}/3] {msg}; "
+                            f"nova tentativa automática em ~30s."
+                        )
+                    else:
+                        print(f"[ERP - Erro Definitivo ({tentativa_atual}/3)] {msg}")
+                        self._salvar_screenshot_erro(numero_nota)
+                        registrar_outro_erro(numero_nota, origem_contato, msg)
+                    return {"status": novo_status, "mensagem": msg}
 
             print(f"[ERP] Nota {numero_nota} localizada em 'Não Importadas'! Iniciando lançamento...")
 
@@ -614,6 +634,7 @@ class ERPLancador:
                 print(
                     f"[ERP - Erro Definitivo ({tentativa_atual}/3)] NF {numero_nota} falhou após 3 tentativas."
                 )
+                self._salvar_screenshot_erro(numero_nota)
                 registrar_outro_erro(numero_nota, origem_contato, mensagem_erro)
 
             self._fechar_iframe_ou_sair()
@@ -802,6 +823,31 @@ class ERPLancador:
         except Exception:
             # Em caso de falha na leitura do DOM, não bloqueia o fluxo normal
             return True
+
+    def _salvar_screenshot_erro(self, numero_nota: str, max_prints: int = 50) -> None:
+        """Captura screenshot da tela do ERP no erro definitivo para facilitar diagnóstico."""
+        try:
+            if not self.page or self.page.is_closed():
+                return
+            ERROS_PRINTS_DIR.mkdir(parents=True, exist_ok=True)
+            num_limpo = re.sub(r"[^\w-]", "_", str(numero_nota))
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            caminho = ERROS_PRINTS_DIR / f"nf_{num_limpo}_{ts}.png"
+            self.page.screenshot(path=str(caminho), full_page=False)
+            print(f"[ERP - Evidência] Print do erro salvo em: reports/erros_prints/{caminho.name}")
+
+            prints = sorted(
+                ERROS_PRINTS_DIR.glob("nf_*.png"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            for antigo in prints[max_prints:]:
+                try:
+                    antigo.unlink()
+                except Exception:
+                    pass
+        except Exception as err_print:
+            print(f"[ERP - Aviso] Não foi possível salvar print do erro: {err_print}")
 
     def _marcar_duplicidade(self, id_unico: str, numero_nota: str, origem: str, msg: str) -> Dict[str, Any]:
         print(f"[ERP - Duplicidade] {msg}")

@@ -1,4 +1,5 @@
 import csv
+import time
 from datetime import datetime
 from pathlib import Path
 from .config import REPORTS_DIR
@@ -6,15 +7,72 @@ from .config import REPORTS_DIR
 CABECALHO_PADRAO = ["Data_Hora", "Numero_Nota", "Origem_Contato", "Detalhes"]
 
 
-def _adicionar_ao_relatorio(caminho_arquivo: Path, cabecalho: list, linha: list) -> None:
-    """Função utilitária interna para anexar uma linha com formato compatível com Excel."""
-    arquivo_existe = caminho_arquivo.exists()
+def _descarregar_buffer_pendente(caminho_arquivo: Path, cabecalho: list) -> None:
+    """Mescla linhas represadas no arquivo _buffer.csv assim que o CSV principal estiver liberado."""
+    arquivo_buffer = caminho_arquivo.with_name(f"{caminho_arquivo.stem}_buffer.csv")
+    if not arquivo_buffer.exists():
+        return
 
-    with open(caminho_arquivo, mode="a", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f, delimiter=";")
-        if not arquivo_existe:
-            writer.writerow(cabecalho)
-        writer.writerow(linha)
+    try:
+        with open(arquivo_buffer, mode="r", newline="", encoding="utf-8-sig") as fb:
+            linhas_buffer = list(csv.reader(fb, delimiter=";"))
+        if not linhas_buffer:
+            arquivo_buffer.unlink(missing_ok=True)
+            return
+
+        arquivo_existe = caminho_arquivo.exists() and caminho_arquivo.stat().st_size > 0
+        with open(caminho_arquivo, mode="a", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f, delimiter=";")
+            if not arquivo_existe:
+                writer.writerow(cabecalho)
+            for linha in linhas_buffer:
+                if linha != cabecalho:
+                    writer.writerow(linha)
+
+        arquivo_buffer.unlink(missing_ok=True)
+        print(f"[Relatório] Buffer pendente mesclado com sucesso em {caminho_arquivo.name}.")
+    except Exception:
+        pass
+
+
+def _adicionar_ao_relatorio(caminho_arquivo: Path, cabecalho: list, linha: list) -> None:
+    """
+    Anexa uma linha em CSV compatível com Excel.
+    Se o arquivo principal estiver bloqueado (ex: aberto no Excel), tenta 3x e grava em
+    <nome>_buffer.csv para mesclar automaticamente na próxima oportunidade sem perder dados.
+    """
+    for tentativa in range(3):
+        try:
+            _descarregar_buffer_pendente(caminho_arquivo, cabecalho)
+            arquivo_existe = caminho_arquivo.exists() and caminho_arquivo.stat().st_size > 0
+
+            with open(caminho_arquivo, mode="a", newline="", encoding="utf-8-sig") as f:
+                writer = csv.writer(f, delimiter=";")
+                if not arquivo_existe:
+                    writer.writerow(cabecalho)
+                writer.writerow(linha)
+            return
+        except PermissionError:
+            if tentativa < 2:
+                time.sleep(0.3)
+            else:
+                arquivo_buffer = caminho_arquivo.with_name(f"{caminho_arquivo.stem}_buffer.csv")
+                try:
+                    buffer_existe = arquivo_buffer.exists() and arquivo_buffer.stat().st_size > 0
+                    with open(arquivo_buffer, mode="a", newline="", encoding="utf-8-sig") as fb:
+                        writer = csv.writer(fb, delimiter=";")
+                        if not buffer_existe:
+                            writer.writerow(cabecalho)
+                        writer.writerow(linha)
+                    print(
+                        f"[Relatório - Buffer] '{caminho_arquivo.name}' está aberto/bloqueado; "
+                        f"registro salvo em '{arquivo_buffer.name}' para mesclagem automática."
+                    )
+                except Exception as err_buf:
+                    print(f"[Relatório - Aviso] Não foi possível gravar buffer de '{caminho_arquivo.name}': {err_buf}")
+        except Exception as err:
+            print(f"[Relatório - Aviso] Falha ao gravar em '{caminho_arquivo.name}': {err}")
+            return
 
 
 def registrar_nota_lancada(numero_nota: str, origem_contato: str, detalhes: str = "Lançamento concluído com sucesso") -> None:
