@@ -80,6 +80,10 @@ class App(tk.Tk):
         self.var_whatsapp_alerta = tk.StringVar(value=WHATSAPP_ALERTA)
         self.var_whatsapp_chat = tk.StringVar(value=WHATSAPP_CHAT_ALVO)
         self.var_whatsapp_ignorar = tk.StringVar(value=WHATSAPP_IGNORAR)
+        self._chat_alvo_cache = WHATSAPP_CHAT_ALVO
+        self._ignorar_cache = WHATSAPP_IGNORAR
+        self.var_whatsapp_chat.trace_add("write", lambda *_: setattr(self, "_chat_alvo_cache", self.var_whatsapp_chat.get().strip()))
+        self.var_whatsapp_ignorar.trace_add("write", lambda *_: setattr(self, "_ignorar_cache", self.var_whatsapp_ignorar.get().strip()))
 
         # Variável para Teste Individual de Nota
         self.var_nota_teste = tk.StringVar(value="")
@@ -100,7 +104,7 @@ class App(tk.Tk):
         sys.stderr = RedirecionadorTexto(self.fila_logs)
 
         self._construir_interface()
-        self._atualizar_metricas()
+        self._agendar_metricas()
         self._processar_fila_logs()
 
         self.protocol("WM_DELETE_WINDOW", self._ao_fechar)
@@ -670,13 +674,20 @@ class App(tk.Tk):
 
         self._iniciar_tarefa(teste, f"Testando Lançamento da Nota {numero}...")
 
+    def _obter_int_seguro(self, var: tk.IntVar, padrao: int) -> int:
+        try:
+            val = int(var.get())
+            return max(1, val)
+        except Exception:
+            return padrao
+
     def _iniciar_continuo(self):
         self._salvar_configuracoes_interface()
         url = self.var_erp_url.get().strip()
         user = self.var_erp_usuario.get().strip()
         senha = self.var_erp_senha.get().strip()
-        limite = self.var_limite_notas.get()
-        intervalo = self.var_intervalo.get()
+        limite = self._obter_int_seguro(self.var_limite_notas, LIMITE_NOTAS_POR_EXECUCAO)
+        intervalo = self._obter_int_seguro(self.var_intervalo, INTERVALO_MONITORAMENTO_SEGUNDOS)
         num_alerta = self.var_whatsapp_alerta.get().strip()
         headless = not self.var_modo_teste.get()
 
@@ -713,15 +724,15 @@ class App(tk.Tk):
                         while not self.evento_parar.is_set():
                             try:
                                 # Atualiza filtros caso o usuário tenha alterado na interface
-                                zap.chats_ignorar = self.var_whatsapp_ignorar.get().strip()
-                                zap.chat_alvo = self.var_whatsapp_chat.get().strip()
+                                zap.chats_ignorar = self._ignorar_cache
+                                zap.chat_alvo = self._chat_alvo_cache
 
                                 # Auto-recuperação do ERP caso a sessão tenha expirado ou a rede tenha voltado
                                 erp_pronto = erp.verificar_ou_recuperar_sessao()
 
                                 # Varre novas mensagens no WhatsApp aberto
                                 zap.ler_mensagens_e_enfileirar()
-                                self._atualizar_metricas()
+                                self.after(0, self._atualizar_metricas)
 
                                 # Processa notas pendentes diretamente no ERP já aberto
                                 if erp_pronto:
@@ -736,7 +747,7 @@ class App(tk.Tk):
 
                                         res = erp.lancar_nota(id_unico=id_unico, numero_nota=num, origem_contato=origem)
                                         st = res.get("status", "")
-                                        self._atualizar_metricas()
+                                        self.after(0, self._atualizar_metricas)
 
                                         # Se lançada com sucesso, reage com 👍 no WhatsApp já aberto
                                         if st == "lancado":
@@ -770,9 +781,11 @@ class App(tk.Tk):
         url = self.var_erp_url.get().strip()
         user = self.var_erp_usuario.get().strip()
         senha = self.var_erp_senha.get().strip()
-        limite = self.var_limite_notas.get()
+        limite = self._obter_int_seguro(self.var_limite_notas, LIMITE_NOTAS_POR_EXECUCAO)
         num_alerta = self.var_whatsapp_alerta.get().strip()
         headless = not self.var_modo_teste.get()
+        ignorar = self._ignorar_cache
+        chat_alvo = self._chat_alvo_cache
 
         def ciclo():
             print(f"[Painel] Executando ciclo único na Central: {url}...")
@@ -780,13 +793,13 @@ class App(tk.Tk):
                 with WhatsAppMonitor(
                     headless=headless,
                     playwright_instance=p,
-                    chats_ignorar=self.var_whatsapp_ignorar.get().strip(),
-                    chat_alvo=self.var_whatsapp_chat.get().strip(),
+                    chats_ignorar=ignorar,
+                    chat_alvo=chat_alvo,
                 ) as zap:
                     if not zap.abrir_e_garantir_login():
                         return
                     zap.ler_mensagens_e_enfileirar()
-                    self._atualizar_metricas()
+                    self.after(0, self._atualizar_metricas)
 
                     with ERPLancador(headless=headless, url=url, usuario=user, senha=senha, playwright_instance=p) as erp:
                         erp.login_e_navegar_para_entrada()
@@ -794,21 +807,21 @@ class App(tk.Tk):
                         for nota in notas_pendentes:
                             res = erp.lancar_nota(nota["id_unico"], nota["numero_nota"], nota["origem_contato"])
                             st = res.get("status", "")
-                            self._atualizar_metricas()
+                            self.after(0, self._atualizar_metricas)
                             if st == "lancado":
                                 try:
                                     zap.reagir_mensagem_nota_lancada(nota["numero_nota"], origem_contato=nota["origem_contato"])
                                 except Exception as e:
-                                    print(f"[WhatsApp] Aviso ao reagir com ✅: {e}")
+                                    print(f"[WhatsApp] Aviso ao reagir com 👍: {e}")
                             self._enviar_alertas_whatsapp(zap, num_alerta, res, nota["numero_nota"], nota["origem_contato"])
             print("[Painel] Ciclo concluído com sucesso.")
 
-        self._iniciar_tarefa(cycle := ciclo, "Executando Ciclo Único...")
+        self._iniciar_tarefa(ciclo, "Executando Ciclo Único...")
 
     def _executar_apenas_zap(self):
         self._salvar_configuracoes_interface()
-        ignorar = self.var_whatsapp_ignorar.get().strip()
-        chat_alvo = self.var_whatsapp_chat.get().strip()
+        ignorar = self._ignorar_cache
+        chat_alvo = self._chat_alvo_cache
         headless = not self.var_modo_teste.get()
 
         def zap():
@@ -823,7 +836,7 @@ class App(tk.Tk):
         url = self.var_erp_url.get().strip()
         user = self.var_erp_usuario.get().strip()
         senha = self.var_erp_senha.get().strip()
-        limite = self.var_limite_notas.get()
+        limite = self._obter_int_seguro(self.var_limite_notas, LIMITE_NOTAS_POR_EXECUCAO)
         headless = not self.var_modo_teste.get()
 
         def erp():
@@ -835,7 +848,7 @@ class App(tk.Tk):
                     print("[ERP] Nenhuma nota pendente de lançamento na fila.")
                 for nota in notas_pendentes:
                     erp_inst.lancar_nota(nota["id_unico"], nota["numero_nota"], nota["origem_contato"])
-                    self._atualizar_metricas()
+                    self.after(0, self._atualizar_metricas)
             print("[Painel] Lançamento concluído.")
 
         self._iniciar_tarefa(erp, "Lançando no ERP...")
@@ -860,6 +873,12 @@ class App(tk.Tk):
                 zap.enviar_alerta(
                     num_alerta,
                     f"🔎 *Alerta Nota Inexistente*\nA *NF {num}* não existe no ERP (não apareceu no filtro ao digitar)!\nOrigem: {origem}",
+                )
+            elif st == "erro":
+                detalhe = " ".join(str(res.get("mensagem", "Erro inesperado")).split())[:180]
+                zap.enviar_alerta(
+                    num_alerta,
+                    f"❌ *Alerta de Erro no Lançamento*\nA *NF {num}* caiu em Outros Erros!\nMotivo: {detalhe}\nOrigem: {origem}",
                 )
             fin = res.get("financeiro", {})
             if fin.get("divergencia"):
@@ -902,7 +921,11 @@ class App(tk.Tk):
 
         except Exception:
             pass
-        self.after(5000, self._atualizar_metricas)
+
+    def _agendar_metricas(self):
+        """Mantém um único agendador periódico a cada 5s na thread principal."""
+        self._atualizar_metricas()
+        self.after(5000, self._agendar_metricas)
 
     def _processar_fila_logs(self):
         while not self.fila_logs.empty():

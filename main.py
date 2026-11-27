@@ -101,6 +101,7 @@ def etapa_lancar_erp(
 
             resultado = erp.lancar_nota(id_unico, numero_nota, origem)
             resultado["origem"] = origem
+            resultado["numero_nota"] = numero_nota
             resultados.append(resultado)
             total_processadas += 1
 
@@ -136,6 +137,14 @@ def etapa_confirmar_whatsapp(resultados: List[Dict[str, Any]], numero_alerta: st
                 alertas_pendentes.append(
                     f"🔎 *Alerta Nota Inexistente*\n"
                     f"A *NF {num}* não existe no ERP (não apareceu no filtro ao digitar)!\n"
+                    f"Origem: {origem}"
+                )
+            elif st == "erro":
+                detalhe = " ".join(str(r.get("mensagem", "Erro inesperado")).split())[:180]
+                alertas_pendentes.append(
+                    f"❌ *Alerta de Erro no Lançamento*\n"
+                    f"A *NF {num}* caiu em Outros Erros!\n"
+                    f"Motivo: {detalhe}\n"
                     f"Origem: {origem}"
                 )
 

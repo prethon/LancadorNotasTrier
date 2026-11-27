@@ -385,6 +385,7 @@ class WhatsAppMonitor:
             "alerta lançador de notas",
             "alerta boleto divergente",
             "alerta de boleto divergente",
+            "alerta de erro no lançamento",
         )
         return any(assinatura in texto_low for assinatura in assinaturas_alerta)
 
@@ -503,6 +504,12 @@ class WhatsAppMonitor:
         Se várias lojas enviarem mensagens simultaneamente, abre cada uma
         e enfileira todas as notas no SQLite.
         """
+        if not self.page or self.page.is_closed():
+            print("[WhatsApp - Auto-Recuperação] 🔄 Janela do WhatsApp fechada detectada! Reabrindo...")
+            self.iniciar()
+            if not self.abrir_e_garantir_login():
+                return 0, []
+
         self._fechar_modais_whatsapp()
         checkpoint = self._carregar_dados_checkpoint()
         alvo_fixo = (self.chat_alvo or "").strip()

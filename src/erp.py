@@ -417,12 +417,23 @@ class ERPLancador:
         print(f"\n[ERP] Iniciando processamento da NF: {numero_nota} (Origem: {origem_contato})...")
 
         # Auto-recuperação de sessão caso tenha expirado
-        self.verificar_ou_recuperar_sessao()
+        if not self.verificar_ou_recuperar_sessao():
+            msg = f"ERP indisponível no momento; NF {numero_nota} mantida na fila para próxima tentativa."
+            print(f"[ERP - Adiado] {msg}")
+            return {"status": "adiado", "mensagem": msg}
 
         try:
             # 0. Garante que não há modal/iframe residual aberto e limpa filtros anteriores
             if self.page.locator("div.modal_container, iframe").count() > 0:
                 self._fechar_iframe_ou_sair()
+            if self.page.locator("div.modal_container").count() > 0:
+                print("[ERP - Auto-Recuperação] Modal persistente detectado antes da nota. Recarregando tela Rec_1020...")
+                try:
+                    self.page.reload(wait_until="load", timeout=30000)
+                    time.sleep(1.5)
+                    self.verificar_ou_recuperar_sessao()
+                except Exception as err_rec:
+                    print(f"[ERP - Auto-Recuperação] Aviso ao recarregar tela: {err_rec}")
             self._limpar_filtros_tela()
 
             # 1. Garantir filtro 'Não Importadas'
@@ -623,22 +634,46 @@ class ERPLancador:
             pass
 
     def _fechar_iframe_ou_sair(self) -> None:
-        """Fecha qualquer modal/iframe aberto (Sair, Fechar, Voltar, X ou Esc)."""
+        """Fecha qualquer modal/iframe aberto (Sair, Fechar, Voltar, Cancelar, OK ou Esc)."""
         try:
-            seletores_fechar = (
+            seletores_prioritarios = (
                 "button:has-text('Sair'), input[type='button'][value*='Sair'], "
-                "button:has-text('Fechar'), input[type='button'][value*='Fechar'], "
+                "button:has-text('Fechar'), input[type='button'][value*='Fechar']"
+            )
+            seletores_secundarios = (
                 "button:has-text('Voltar'), input[type='button'][value*='Voltar'], "
                 "button:has-text('Cancelar'), input[type='button'][value*='Cancelar'], "
                 "button:has-text('OK'), input[type='button'][value='OK']"
             )
+
+            def _clicar_visiveis_no_escopo(escopo, seletor: str) -> bool:
+                """Tenta cada botão realmente visível (bounding_box > 0) até o modal sumir."""
+                btns = escopo.locator(seletor)
+                for b_idx in range(btns.count()):
+                    if self.page.locator("div.modal_container, iframe").count() == 0:
+                        return True
+                    try:
+                        cand = btns.nth(b_idx)
+                        if not cand.is_visible():
+                            continue
+                        cand.scroll_into_view_if_needed()
+                        box = cand.bounding_box()
+                        if not box or box["width"] <= 0 or box["height"] <= 0:
+                            continue
+                        cand.click(timeout=3000)
+                        time.sleep(0.8)
+                        if self.page.locator("div.modal_container, iframe").count() == 0:
+                            return True
+                    except Exception:
+                        continue
+                return self.page.locator("div.modal_container, iframe").count() == 0
 
             # Executa até 2 rodadas para fechar modais empilhados (ex: Contas a Pagar + Resumo)
             for _ in range(2):
                 if self.page.locator("div.modal_container, iframe").count() == 0 and self.page.get_by_role("button", name="Sair [Esc]").count() == 0:
                     break
 
-                # 1. Tenta fechar por dentro de todos os iframes abertos (somente botão realmente VISÍVEL)
+                # 1. Tenta fechar por dentro de todos os iframes abertos
                 total_iframes = self.page.locator("iframe").count()
                 for idx in range(total_iframes - 1, -1, -1):
                     try:
@@ -648,19 +683,10 @@ class ERPLancador:
                         except Exception:
                             pass
 
-                        btn_frame = frame.locator(seletores_fechar)
-                        clicou_visivel = False
-                        for b_idx in range(btn_frame.count()):
-                            try:
-                                cand = btn_frame.nth(b_idx)
-                                if cand.is_visible():
-                                    cand.scroll_into_view_if_needed()
-                                    cand.click(timeout=3000)
-                                    time.sleep(0.8)
-                                    clicou_visivel = True
-                                    break
-                            except Exception:
-                                continue
+                        if _clicar_visiveis_no_escopo(frame, seletores_prioritarios):
+                            continue
+                        if _clicar_visiveis_no_escopo(frame, seletores_secundarios):
+                            continue
 
                         # Se o modal ainda estiver aberto, tenta Escape diretamente dentro do iframe
                         if self.page.locator("div.modal_container, iframe").count() > 0:
@@ -674,25 +700,13 @@ class ERPLancador:
 
                 # 2. Tenta fechar pelo botão visível do container do modal
                 if self.page.locator("div.modal_container, iframe").count() > 0:
-                    try:
-                        btn_modal = self.page.locator(
-                            "div.modal_container button:has-text('Sair'), div.modal_container button:has-text('Fechar'), "
-                            "div.modal_container input[value*='Sair'], div.modal_container input[value*='Fechar'], "
-                            "div.modal_container .modal_close, div.modal_container a[title*='Fechar'], "
-                            "div.modal_container span[title*='Fechar']"
-                        )
-                        for m_idx in range(btn_modal.count()):
-                            try:
-                                cand_m = btn_modal.nth(m_idx)
-                                if cand_m.is_visible():
-                                    cand_m.scroll_into_view_if_needed()
-                                    cand_m.click(timeout=3000)
-                                    time.sleep(0.8)
-                                    break
-                            except Exception:
-                                continue
-                    except Exception:
-                        pass
+                    _clicar_visiveis_no_escopo(
+                        self.page,
+                        "div.modal_container button:has-text('Sair'), div.modal_container button:has-text('Fechar'), "
+                        "div.modal_container input[value*='Sair'], div.modal_container input[value*='Fechar'], "
+                        "div.modal_container .modal_close, div.modal_container a[title*='Fechar'], "
+                        "div.modal_container span[title*='Fechar']",
+                    )
 
                 # 3. Tenta botão 'Sair [Esc]' na própria página
                 if self.page.locator("div.modal_container, iframe").count() > 0 or self.page.get_by_role("button", name="Sair [Esc]").count() > 0:
@@ -704,7 +718,8 @@ class ERPLancador:
                                 if cand_s.is_visible():
                                     cand_s.click(timeout=3000)
                                     time.sleep(0.8)
-                                    break
+                                    if self.page.locator("div.modal_container, iframe").count() == 0:
+                                        break
                             except Exception:
                                 continue
                     except Exception:
@@ -717,22 +732,25 @@ class ERPLancador:
 
             if self.page.locator("div.modal_container").count() > 0:
                 try:
-                    botoes_debug = self.page.evaluate("""() => {
+                    botoes_visiveis = self.page.evaluate("""() => {
                         const res = [];
                         document.querySelectorAll('iframe').forEach(ifr => {
                             try {
                                 const doc = ifr.contentDocument;
                                 if (doc) {
                                     doc.querySelectorAll('button, input[type=button], input[type=submit]').forEach(b => {
-                                        res.push((b.innerText || b.value || '').trim());
+                                        const r = b.getBoundingClientRect();
+                                        if (r.width > 0 && r.height > 0) {
+                                            res.push((b.innerText || b.value || '').trim());
+                                        }
                                     });
                                 }
                             } catch (e) {}
                         });
                         return res.filter(Boolean);
                     }""")
-                    if botoes_debug:
-                        print(f"[ERP - Aviso] Modal ainda aberto. Botões encontrados no iframe: {botoes_debug}")
+                    if botoes_visiveis:
+                        print(f"[ERP - Aviso] Modal ainda aberto. Botões visíveis no iframe: {botoes_visiveis}")
                 except Exception:
                     pass
         except Exception:
