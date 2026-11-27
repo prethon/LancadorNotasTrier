@@ -1,5 +1,5 @@
 {
-  "versao": "1.2.11",
+  "versao": "1.2.12",
   "data_lancamento": "2026-11-27",
-  "descricao": "Atualização automática: app.py, main.py, src/erp.py, src/whatsapp.py"
+  "descricao": "Atualização automática: app.py, src/database.py, src/erp.py"
 }

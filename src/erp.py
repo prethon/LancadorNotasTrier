@@ -9,7 +9,7 @@ from .config import (
     ERP_SENHA,
     MODO_TESTE,
 )
-from .database import atualizar_status_nota
+from .database import atualizar_status_nota, registrar_falha_lancamento
 from .reporter import (
     registrar_nota_lancada,
     registrar_duplicidade,
@@ -602,10 +602,31 @@ class ERPLancador:
         except Exception as e:
             mensagem_erro = f"Exceção durante lançamento: {str(e)}"
             print(f"[ERP - Erro] {mensagem_erro}")
-            atualizar_status_nota(id_unico, "erro", mensagem_erro)
-            registrar_outro_erro(numero_nota, origem_contato, mensagem_erro)
+            novo_status, tentativa_atual = registrar_falha_lancamento(
+                id_unico, mensagem_erro, max_tentativas=3
+            )
+            if novo_status == "aguardando_retry":
+                print(
+                    f"[ERP - Nova Tentativa {tentativa_atual}/3] Falha temporária na NF {numero_nota}; "
+                    f"nova tentativa automática em ~30s."
+                )
+            else:
+                print(
+                    f"[ERP - Erro Definitivo ({tentativa_atual}/3)] NF {numero_nota} falhou após 3 tentativas."
+                )
+                registrar_outro_erro(numero_nota, origem_contato, mensagem_erro)
+
             self._fechar_iframe_ou_sair()
-            return {"status": "erro", "mensagem": mensagem_erro}
+            try:
+                if self.page and self.page.locator("div.modal_container, iframe").count() > 0:
+                    print("[ERP] Modal/iframe persistente após falha; recarregando tela do ERP...")
+                    self.page.reload(wait_until="load", timeout=30000)
+                    time.sleep(1.2)
+                    self.verificar_ou_recuperar_sessao()
+            except Exception as rec_err:
+                print(f"[ERP - Aviso] Falha ao resetar tela pós-erro: {rec_err}")
+
+            return {"status": novo_status, "mensagem": mensagem_erro}
         finally:
             self._limpar_filtros_tela()
 

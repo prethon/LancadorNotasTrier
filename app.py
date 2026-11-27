@@ -29,6 +29,7 @@ from src.database import (
     inserir_nota,
     gerar_id_unico,
     get_connection,
+    reprocessar_erros,
 )
 from src.erp import ERPLancador
 from src.whatsapp import WhatsAppMonitor
@@ -329,6 +330,19 @@ class App(tk.Tk):
         )
         btn_limpar_inconsistencias.pack(side=tk.RIGHT)
 
+        btn_reprocessar_erros = tk.Button(
+            frame_acoes_limpeza,
+            text="🔄 Reprocessar Erros",
+            bg="#f8f9fa",
+            fg="#0d6efd",
+            font=("Arial", 8, "bold"),
+            relief=tk.GROOVE,
+            padx=8,
+            pady=2,
+            command=self._reprocessar_erros,
+        )
+        btn_reprocessar_erros.pack(side=tk.RIGHT, padx=(0, 6))
+
         ttk.Label(
             frame_acoes_limpeza,
             text="* Preserva notas lançadas e pendentes mesmo com automação rodando.",
@@ -542,12 +556,27 @@ class App(tk.Tk):
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("DELETE FROM notas WHERE status NOT IN ('pendente', 'lancado')")
+                cursor.execute("DELETE FROM notas WHERE status NOT IN ('pendente', 'aguardando_retry', 'lancado')")
                 conn.commit()
         except Exception as e:
             print(f"[Painel] Aviso ao limpar banco: {e}")
 
         self._atualizar_metricas()
+
+    def _reprocessar_erros(self):
+        qtd = reprocessar_erros()
+        self._atualizar_metricas()
+        if qtd > 0:
+            print(f"[Painel] {qtd} nota(s) com erro foram recolocadas na fila para reprocessamento.")
+            messagebox.showinfo(
+                "Reprocessar Erros",
+                f"{qtd} nota(s) com erro voltaram para a fila de pendentes!",
+            )
+        else:
+            messagebox.showinfo(
+                "Reprocessar Erros",
+                "Não há notas com erro para reprocessar no momento.",
+            )
         print("\n" + "=" * 65)
         print("[Painel] 🧹 Relatórios de inconsistências zerados com sucesso!")
         print("[Painel] ✅ Notas lançadas e pendentes foram 100% preservadas.")
@@ -893,7 +922,8 @@ class App(tk.Tk):
     def _atualizar_metricas(self):
         try:
             stats = obter_resumo_estatisticas()
-            self.card_pendentes.config(text=str(stats.get("pendente", 0)))
+            total_pendentes = stats.get("pendente", 0) + stats.get("aguardando_retry", 0)
+            self.card_pendentes.config(text=str(total_pendentes))
             self.card_lancadas.config(text=str(stats.get("lancado", 0)))
             tot_duplicadas = max(
                 stats.get("duplicada_erp", 0),
@@ -910,12 +940,18 @@ class App(tk.Tk):
             self.card_boletos_div.config(text=str(tot_boletos_div))
 
             # Atualizar Lista Visual da Fila de Pendentes
-            pendentes = obter_notas_pendentes()
+            pendentes = obter_notas_pendentes(incluir_em_cooldown=True)
             self.list_pendentes.delete(0, tk.END)
             for nota in pendentes:
                 num = nota.get("numero_nota", "")
                 origem = nota.get("origem_contato", "WhatsApp")
-                self.list_pendentes.insert(tk.END, f"• NF {num}  ({origem})")
+                if nota.get("status") == "aguardando_retry":
+                    prox_tentativa = min(int(nota.get("tentativas") or 1) + 1, 3)
+                    self.list_pendentes.insert(
+                        tk.END, f"• NF {num}  (Tentativa {prox_tentativa}/3 - {origem})"
+                    )
+                else:
+                    self.list_pendentes.insert(tk.END, f"• NF {num}  ({origem})")
 
             self.lbl_info_fila.config(text=f"Total na fila: {len(pendentes)}")
 
