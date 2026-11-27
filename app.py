@@ -491,50 +491,71 @@ class App(tk.Tk):
 
     def _checar_atualizacoes_gui(self):
         """Verifica se há novas versões no GitHub e aplica a atualização de forma segura."""
+        self.btn_atualizar.config(state=tk.DISABLED, text="⏳ Checando...")
+
+        def aplicar_em_segundo_plano(url_zip: str, nova: str):
+            sucesso = baixar_e_aplicar_atualizacao(url_zip)
+
+            def finalizar():
+                self.btn_atualizar.config(state=tk.NORMAL, text="🔄 Verificar Atualizações")
+                if sucesso:
+                    messagebox.showinfo(
+                        "Atualização Concluída",
+                        f"O sistema foi atualizado com sucesso para a v{nova}!\n\n"
+                        f"O aplicativo será reiniciado agora.",
+                    )
+                    reiniciar_aplicacao()
+                else:
+                    messagebox.showerror(
+                        "Erro na Atualização",
+                        "Não foi possível concluir a atualização. Consulte os logs na tela para mais detalhes.",
+                    )
+
+            self.after(0, finalizar)
+
         def tarefa():
             try:
-                self.btn_atualizar.config(state=tk.DISABLED, text="⏳ Checando...")
                 print("[Auto-Updater] Verificando atualizações no GitHub...")
                 resultado = verificar_atualizacao()
-                self.btn_atualizar.config(state=tk.NORMAL, text="🔄 Verificar Atualizações")
 
-                if resultado.get("disponivel"):
-                    nova = resultado.get("nova_versao")
-                    atual = resultado.get("versao_atual")
-                    desc = resultado.get("descricao")
-                    url_zip = resultado.get("url_zip")
+                def processar_resultado():
+                    self.btn_atualizar.config(state=tk.NORMAL, text="🔄 Verificar Atualizações")
+                    if resultado.get("disponivel"):
+                        nova = resultado.get("nova_versao")
+                        atual = resultado.get("versao_atual")
+                        desc = resultado.get("descricao")
+                        url_zip = resultado.get("url_zip")
 
-                    confirmar = messagebox.askyesno(
-                        "Nova Versão Disponível!",
-                        f"Uma nova versão foi encontrada no GitHub!\n\n"
-                        f"• Versão Atual: v{atual}\n"
-                        f"• Nova Versão: v{nova}\n\n"
-                        f"Novidades:\n{desc}\n\n"
-                        f"Deseja baixar e aplicar a atualização agora?\n"
-                        f"(Seus dados, senhas e relatórios serão 100% preservados)"
-                    )
-                    if confirmar:
-                        print(f"[Auto-Updater] Baixando e aplicando a versão v{nova}...")
-                        sucesso = baixar_e_aplicar_atualizacao(url_zip)
-                        if sucesso:
-                            messagebox.showinfo(
-                                "Atualização Concluída",
-                                f"O sistema foi atualizado com sucesso para a v{nova}!\n\n"
-                                f"O aplicativo será reiniciado agora."
-                            )
-                            reiniciar_aplicacao()
-                        else:
-                            messagebox.showerror(
-                                "Erro na Atualização",
-                                "Não foi possível concluir a atualização. Consulte os logs na tela para mais detalhes."
-                            )
-                else:
-                    motivo = resultado.get("motivo", "Você já está utilizando a versão mais recente.")
-                    messagebox.showinfo("Verificação de Atualizações", motivo)
+                        confirmar = messagebox.askyesno(
+                            "Nova Versão Disponível!",
+                            f"Uma nova versão foi encontrada no GitHub!\n\n"
+                            f"• Versão Atual: v{atual}\n"
+                            f"• Nova Versão: v{nova}\n\n"
+                            f"Novidades:\n{desc}\n\n"
+                            f"Deseja baixar e aplicar a atualização agora?\n"
+                            f"(Seus dados, senhas e relatórios serão 100% preservados)",
+                        )
+                        if confirmar:
+                            print(f"[Auto-Updater] Baixando e aplicando a versão v{nova}...")
+                            self.btn_atualizar.config(state=tk.DISABLED, text="⏳ Atualizando...")
+                            threading.Thread(
+                                target=aplicar_em_segundo_plano,
+                                args=(url_zip, nova),
+                                daemon=True,
+                            ).start()
+                    else:
+                        motivo = resultado.get("motivo", "Você já está utilizando a versão mais recente.")
+                        messagebox.showinfo("Verificação de Atualizações", motivo)
+
+                self.after(0, processar_resultado)
             except Exception as e:
-                self.btn_atualizar.config(state=tk.NORMAL, text="🔄 Verificar Atualizações")
                 print(f"[Auto-Updater] Erro ao verificar atualizações: {e}")
-                messagebox.showerror("Erro", f"Falha ao verificar atualizações: {e}")
+
+                def mostrar_erro(err=e):
+                    self.btn_atualizar.config(state=tk.NORMAL, text="🔄 Verificar Atualizações")
+                    messagebox.showerror("Erro", f"Falha ao verificar atualizações: {err}")
+
+                self.after(0, mostrar_erro)
 
         threading.Thread(target=tarefa, daemon=True).start()
 
@@ -869,10 +890,15 @@ class App(tk.Tk):
                                                     st = res.get("status", "")
                                                     self.after(0, self._atualizar_metricas)
 
+                                                    if st == "adiado":
+                                                        print("[Painel] ERP indisponível no momento; interrompendo lote neste ciclo.")
+                                                        break
+
                                                     # Se lançada com sucesso, reage com 👍 no WhatsApp já aberto
                                                     if st == "lancado":
+                                                        chat_reacao = nota.get("chat_origem") or origem
                                                         try:
-                                                            zap.reagir_mensagem_nota_lancada(num, origem_contato=origem)
+                                                            zap.reagir_mensagem_nota_lancada(num, origem_contato=chat_reacao)
                                                         except Exception as err_reagir:
                                                             print(f"[WhatsApp] Aviso ao reagir com 👍: {err_reagir}")
 
@@ -953,9 +979,13 @@ class App(tk.Tk):
                             res = erp.lancar_nota(nota["id_unico"], nota["numero_nota"], nota["origem_contato"])
                             st = res.get("status", "")
                             self.after(0, self._atualizar_metricas)
+                            if st == "adiado":
+                                print("[Painel] ERP indisponível no momento; interrompendo lote neste ciclo.")
+                                break
                             if st == "lancado":
+                                chat_reacao = nota.get("chat_origem") or nota["origem_contato"]
                                 try:
-                                    zap.reagir_mensagem_nota_lancada(nota["numero_nota"], origem_contato=nota["origem_contato"])
+                                    zap.reagir_mensagem_nota_lancada(nota["numero_nota"], origem_contato=chat_reacao)
                                 except Exception as e:
                                     print(f"[WhatsApp] Aviso ao reagir com 👍: {e}")
                             self._enviar_alertas_whatsapp(zap, num_alerta, res, nota["numero_nota"], nota["origem_contato"])
@@ -1123,14 +1153,25 @@ class App(tk.Tk):
 
     def _ao_fechar(self):
         self._salvar_configuracoes_interface()
+        encerrar = True
         if self.esta_executando:
-            if messagebox.askyesno("Encerrar", "A automação ainda está rodando. Deseja realmente parar e sair?"):
+            encerrar = messagebox.askyesno(
+                "Encerrar",
+                "A automação ainda está rodando. Deseja realmente parar e sair?",
+            )
+            if encerrar:
                 self.evento_parar.set()
-                executar_backup()
-                self.destroy()
-        else:
-            executar_backup()
-            self.destroy()
+        if not encerrar:
+            return
+        executar_backup()
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        sys.stdout = self.stdout_original
+        sys.stderr = self.stderr_original
+        self.destroy()
 
 
 def main():

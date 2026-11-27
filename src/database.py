@@ -26,6 +26,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS notas (
                 id_unico TEXT PRIMARY KEY,
                 origem_contato TEXT NOT NULL,
+                chat_origem TEXT,
                 numero_nota TEXT NOT NULL,
                 status TEXT NOT NULL,
                 tentativas INTEGER DEFAULT 0,
@@ -35,6 +36,10 @@ def init_db() -> None:
             )
             """
         )
+        try:
+            cursor.execute("ALTER TABLE notas ADD COLUMN chat_origem TEXT")
+        except sqlite3.OperationalError:
+            pass
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_notas_status ON notas(status)"
         )
@@ -50,13 +55,14 @@ def gerar_id_unico(origem_contato: str, numero_nota: str) -> str:
     return hashlib.sha256(chave.encode("utf-8")).hexdigest()
 
 
-def inserir_nota(numero_nota: str, origem_contato: str = "WhatsApp") -> bool:
+def inserir_nota(numero_nota: str, origem_contato: str = "WhatsApp", chat_origem: Optional[str] = None) -> bool:
     """
     Insere uma nota com status 'pendente' se ainda não existir.
     Retorna True se for inserida com sucesso ou False se já existir (duplicada local).
     """
     init_db()
     id_unico = gerar_id_unico(origem_contato, numero_nota)
+    chat_limpo = (chat_origem or origem_contato).strip()
     agora = datetime.now().isoformat()
 
     with get_connection() as conn:
@@ -65,10 +71,10 @@ def inserir_nota(numero_nota: str, origem_contato: str = "WhatsApp") -> bool:
             cursor.execute(
                 """
                 INSERT INTO notas (
-                    id_unico, origem_contato, numero_nota, status, tentativas, criado_em, atualizado_em
-                ) VALUES (?, ?, ?, 'pendente', 0, ?, ?)
+                    id_unico, origem_contato, chat_origem, numero_nota, status, tentativas, criado_em, atualizado_em
+                ) VALUES (?, ?, ?, ?, 'pendente', 0, ?, ?)
                 """,
-                (id_unico, origem_contato.strip(), numero_nota.strip(), agora, agora),
+                (id_unico, origem_contato.strip(), chat_limpo, numero_nota.strip(), agora, agora),
             )
             conn.commit()
             return True
@@ -98,7 +104,11 @@ def obter_nota_por_id(id_unico: str) -> Optional[Dict[str, Any]]:
         return dict(row) if row else None
 
 
-def agendar_verificacao_duplicidade(origem_contato: str, numero_nota: str) -> Optional[str]:
+def agendar_verificacao_duplicidade(
+    origem_contato: str,
+    numero_nota: str,
+    chat_origem: Optional[str] = None,
+) -> Optional[str]:
     """
     Quando uma nota marcada como 'lancado' ou 'duplicada_erp' é reenviada no WhatsApp,
     agenda status 'verificar_duplicidade' para conferência real no ERP (sem perder o status original).
@@ -107,6 +117,7 @@ def agendar_verificacao_duplicidade(origem_contato: str, numero_nota: str) -> Op
     init_db()
     id_unico = gerar_id_unico(origem_contato, numero_nota)
     agora = datetime.now().isoformat()
+    chat_limpo = chat_origem.strip() if chat_origem and chat_origem.strip() else None
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT status FROM notas WHERE id_unico = ?", (id_unico,))
@@ -120,11 +131,13 @@ def agendar_verificacao_duplicidade(origem_contato: str, numero_nota: str) -> Op
             """
             UPDATE notas
             SET status = 'verificar_duplicidade',
+                tentativas = 0,
+                chat_origem = COALESCE(?, chat_origem),
                 mensagem_erro = ?,
                 atualizado_em = ?
             WHERE id_unico = ?
             """,
-            (f"recheck_duplicidade:{status_ant}", agora, id_unico),
+            (chat_limpo, f"recheck_duplicidade:{status_ant}", agora, id_unico),
         )
         conn.commit()
         return status_ant

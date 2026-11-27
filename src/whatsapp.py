@@ -465,14 +465,20 @@ class WhatsAppMonitor:
                 if numeros:
                     print(f"  [WhatsApp] Mensagem identificada de '{origem_especifica}': '{texto}' -> Notas: {numeros}")
                     for num in numeros:
-                        foi_inserida = inserir_nota(numero_nota=num, origem_contato=origem_especifica)
+                        foi_inserida = inserir_nota(
+                            numero_nota=num,
+                            origem_contato=origem_especifica,
+                            chat_origem=nome_contato,
+                        )
                         if foi_inserida:
                             print(f"  -> [NOVA NOTA CAPTURADA] Nº {num} ({origem_especifica}) enfileirada no banco local.")
                             novas_notas.append(num)
                         else:
                             status_atual = obter_status_nota(origem_especifica, num)
                             if status_atual in ("lancado", "duplicada_erp"):
-                                status_ant = agendar_verificacao_duplicidade(origem_especifica, num)
+                                status_ant = agendar_verificacao_duplicidade(
+                                    origem_especifica, num, chat_origem=nome_contato
+                                )
                                 if status_ant:
                                     print(f"  -> [REENVIO DETECTADO] Nº {num} ({origem_especifica}) estava como '{status_ant}'; agendada conferência real no ERP.")
                                 else:

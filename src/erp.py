@@ -147,7 +147,7 @@ class ERPLancador:
                     print(f"[ERP - Auto-Recuperação] Falha ao reabrir ERP: {err_reabrir}")
                     return False
             print(f"[ERP - Auto-Recuperação] Aviso ao checar sessão: {e}")
-            return True
+            return False
 
     def navegar_menu_para_entrada(self) -> bool:
         """Navega pelo menu Compras -> Entradas -> Entrada NF-e sem refazer o login inicial."""
@@ -360,12 +360,27 @@ class ERPLancador:
             if celulas_textos:
                 total_celulas = len(celulas_textos)
 
-                # Localiza a célula do número da nota
+                # Localiza a célula exata do número da nota (priorizando igualdade exata antes de substring)
                 idx_nota = 0
+                num_alvo = str(numero_nota).strip()
+                encontrou_nota = False
                 for idx, c_txt in enumerate(celulas_textos):
-                    if numero_nota in c_txt:
+                    if c_txt.strip() == num_alvo:
                         idx_nota = idx
+                        encontrou_nota = True
                         break
+                if not encontrou_nota:
+                    padrao_nf = re.compile(rf"\b{re.escape(num_alvo)}\b")
+                    for idx, c_txt in enumerate(celulas_textos):
+                        if padrao_nf.search(c_txt):
+                            idx_nota = idx
+                            encontrou_nota = True
+                            break
+                if not encontrou_nota:
+                    for idx, c_txt in enumerate(celulas_textos):
+                        if num_alvo in c_txt:
+                            idx_nota = idx
+                            break
 
                 # Localiza a Data de Emissão (DD/MM/AAAA) APÓS o número da nota
                 idx_data = -1
@@ -424,9 +439,15 @@ class ERPLancador:
         """Fluxo inteligente com auto-recuperação de sessão, duplicidade e auditoria financeira."""
         self.dialog_mensagem = None
         nota_info = obter_nota_por_id(id_unico)
-        eh_recheck_duplicidade = bool(nota_info and nota_info.get("status") == "verificar_duplicidade")
         msg_recheck = (nota_info.get("mensagem_erro") or "") if nota_info else ""
-        status_original_recheck = "lancado" if msg_recheck.endswith(":lancado") else "duplicada_erp"
+        # A conferência de reenvio continua válida entre as tentativas (status vira 'aguardando_retry'
+        # mas o marcador 'recheck_duplicidade:' permanece na mensagem).
+        eh_recheck_duplicidade = bool(
+            nota_info
+            and nota_info.get("status") in ("verificar_duplicidade", "aguardando_retry")
+            and msg_recheck.startswith("recheck_duplicidade:")
+        )
+        status_original_recheck = "lancado" if msg_recheck.startswith("recheck_duplicidade:lancado") else "duplicada_erp"
         print(f"\n[ERP] Iniciando processamento da NF: {numero_nota} (Origem: {origem_contato})...")
 
         # Auto-recuperação de sessão caso tenha expirado
@@ -486,6 +507,16 @@ class ERPLancador:
                     except Exception:
                         pass
                     msg = f"Nota {num_str} não existe no ERP (não apareceu na lista de filtro ao digitar)."
+                    if eh_recheck_duplicidade:
+                        return self._registrar_falha_segura(
+                            id_unico,
+                            num_str,
+                            origem_contato,
+                            msg,
+                            eh_recheck_duplicidade=True,
+                            status_original_recheck=status_original_recheck,
+                            max_tentativas=2,
+                        )
                     novo_status, tentativa_atual = registrar_falha_lancamento(
                         id_unico, msg, max_tentativas=2
                     )
@@ -528,19 +559,15 @@ class ERPLancador:
                     return self._marcar_duplicidade(id_unico, numero_nota, origem_contato, msg)
                 else:
                     msg = f"Nota {numero_nota} não foi localizada no sistema (nem em Não Importadas, nem em Importadas)"
-                    novo_status, tentativa_atual = registrar_falha_lancamento(
-                        id_unico, msg, max_tentativas=3
+                    return self._registrar_falha_segura(
+                        id_unico,
+                        numero_nota,
+                        origem_contato,
+                        msg,
+                        eh_recheck_duplicidade=eh_recheck_duplicidade,
+                        status_original_recheck=status_original_recheck,
+                        max_tentativas=3,
                     )
-                    if novo_status == "aguardando_retry":
-                        print(
-                            f"[ERP - Nova Tentativa {tentativa_atual}/3] {msg}; "
-                            f"nova tentativa automática em ~30s."
-                        )
-                    else:
-                        print(f"[ERP - Erro Definitivo ({tentativa_atual}/3)] {msg}")
-                        self._salvar_screenshot_erro(numero_nota)
-                        registrar_outro_erro(numero_nota, origem_contato, msg)
-                    return {"status": novo_status, "mensagem": msg}
 
             print(f"[ERP] Nota {numero_nota} localizada em 'Não Importadas'! Iniciando lançamento...")
 
@@ -640,18 +667,16 @@ class ERPLancador:
                         f"{detalhe_dialog}. Tela: {resumo_tela_curto}"
                     )
                     print(f"[ERP - Bloqueado Anti-Falso-Positivo] {motivo_nao_lanc}")
-                    novo_status, tentativa_atual = registrar_falha_lancamento(
-                        id_unico, motivo_nao_lanc, max_tentativas=3
+                    return self._registrar_falha_segura(
+                        id_unico,
+                        numero_nota,
+                        origem_contato,
+                        motivo_nao_lanc,
+                        eh_recheck_duplicidade=eh_recheck_duplicidade,
+                        status_original_recheck=status_original_recheck,
+                        max_tentativas=3,
+                        ja_salvou_print=True,
                     )
-                    if novo_status == "aguardando_retry":
-                        print(
-                            f"[ERP - Nova Tentativa {tentativa_atual}/3] NF {numero_nota} retida antes de concluir; "
-                            f"nova tentativa automática em ~30s."
-                        )
-                    else:
-                        print(f"[ERP - Erro Definitivo ({tentativa_atual}/3)] {motivo_nao_lanc}")
-                        registrar_outro_erro(numero_nota, origem_contato, motivo_nao_lanc)
-                    return {"status": novo_status, "mensagem": motivo_nao_lanc}
 
             # 11. SAÍDA FINAL
             self._fechar_iframe_ou_sair()
@@ -668,20 +693,15 @@ class ERPLancador:
         except Exception as e:
             mensagem_erro = f"Exceção durante lançamento: {str(e)}"
             print(f"[ERP - Erro] {mensagem_erro}")
-            novo_status, tentativa_atual = registrar_falha_lancamento(
-                id_unico, mensagem_erro, max_tentativas=3
+            res_falha = self._registrar_falha_segura(
+                id_unico,
+                numero_nota,
+                origem_contato,
+                mensagem_erro,
+                eh_recheck_duplicidade=eh_recheck_duplicidade,
+                status_original_recheck=status_original_recheck,
+                max_tentativas=3,
             )
-            if novo_status == "aguardando_retry":
-                print(
-                    f"[ERP - Nova Tentativa {tentativa_atual}/3] Falha temporária na NF {numero_nota}; "
-                    f"nova tentativa automática em ~30s."
-                )
-            else:
-                print(
-                    f"[ERP - Erro Definitivo ({tentativa_atual}/3)] NF {numero_nota} falhou após 3 tentativas."
-                )
-                self._salvar_screenshot_erro(numero_nota)
-                registrar_outro_erro(numero_nota, origem_contato, mensagem_erro)
 
             self._fechar_iframe_ou_sair()
             try:
@@ -693,7 +713,7 @@ class ERPLancador:
             except Exception as rec_err:
                 print(f"[ERP - Aviso] Falha ao resetar tela pós-erro: {rec_err}")
 
-            return {"status": novo_status, "mensagem": mensagem_erro}
+            return res_falha
         finally:
             self._limpar_filtros_tela()
 
@@ -1066,6 +1086,51 @@ class ERPLancador:
         except Exception as err_ver:
             print(f"[ERP - Aviso] Falha ao reconsultar status real da NF {numero_nota}: {err_ver}")
             return None
+
+    def _registrar_falha_segura(
+        self,
+        id_unico: str,
+        numero_nota: str,
+        origem_contato: str,
+        mensagem_erro: str,
+        eh_recheck_duplicidade: bool = False,
+        status_original_recheck: str = "lancado",
+        max_tentativas: int = 3,
+        ja_salvou_print: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Registra falha técnica respeitando retry automático. Quando for conferência de reenvio
+        (verificar_duplicidade), preserva o marker de origem e nunca sobrescreve uma nota já
+        lançada com status definitivo de 'erro' se a conferência falhar.
+        """
+        msg_banco = (
+            f"recheck_duplicidade:{status_original_recheck}|{mensagem_erro}"
+            if eh_recheck_duplicidade
+            else mensagem_erro
+        )
+        novo_status, tentativa_atual = registrar_falha_lancamento(
+            id_unico, msg_banco, max_tentativas=max_tentativas
+        )
+        if novo_status == "aguardando_retry":
+            print(
+                f"[ERP - Nova Tentativa {tentativa_atual}/{max_tentativas}] Falha temporária na NF {numero_nota}; "
+                f"nova tentativa automática em ~30s."
+            )
+            return {"status": "aguardando_retry", "mensagem": mensagem_erro}
+
+        if eh_recheck_duplicidade:
+            print(
+                f"[ERP - Aviso] Conferência da NF {numero_nota} falhou após {tentativa_atual} tentativa(s); "
+                f"preservando status original '{status_original_recheck}'."
+            )
+            atualizar_status_nota(id_unico, status_original_recheck, None)
+            return {"status": status_original_recheck, "mensagem": mensagem_erro}
+
+        print(f"[ERP - Erro Definitivo ({tentativa_atual}/{max_tentativas})] {mensagem_erro}")
+        if not ja_salvou_print:
+            self._salvar_screenshot_erro(numero_nota)
+        registrar_outro_erro(numero_nota, origem_contato, mensagem_erro)
+        return {"status": "erro", "mensagem": mensagem_erro}
 
     def _salvar_screenshot_erro(self, numero_nota: str, max_prints: int = 50) -> None:
         """Captura screenshot da tela do ERP no erro definitivo para facilitar diagnóstico."""

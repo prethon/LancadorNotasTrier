@@ -2,6 +2,7 @@ import sys
 import time
 import argparse
 from pathlib import Path
+from typing import Any, Dict, List, Tuple
 from src.config import (
     MODO_TESTE,
     LIMITE_NOTAS_POR_EXECUCAO,
@@ -101,9 +102,12 @@ def etapa_lancar_erp(
 
             resultado = erp.lancar_nota(id_unico, numero_nota, origem)
             resultado["origem"] = origem
+            resultado["chat_origem"] = nota.get("chat_origem") or origem
             resultado["numero_nota"] = numero_nota
             resultados.append(resultado)
             total_processadas += 1
+            if resultado.get("status") == "adiado":
+                break
 
             if MODO_TESTE:
                 time.sleep(2)
@@ -166,7 +170,7 @@ def etapa_confirmar_whatsapp(resultados: List[Dict[str, Any]], numero_alerta: st
             for r in notas_sucesso:
                 try:
                     num = r.get("numero_nota")
-                    origem = r.get("origem")
+                    origem = r.get("chat_origem") or r.get("origem")
                     zap.reagir_mensagem_nota_lancada(num, origem_contato=origem)
                 except Exception as e:
                     print(f"[WhatsApp] Aviso ao reagir com emoji: {e}")
@@ -185,7 +189,6 @@ def ciclo_completo(limite_lancamento: int = None, url: str = None, usuario: str 
     if resultados:
         etapa_confirmar_whatsapp(resultados, numero_alerta=numero_alerta)
     exibir_estatisticas()
-    executar_backup()
     executar_backup()
 
 
