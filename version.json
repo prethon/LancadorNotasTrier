@@ -1,5 +1,5 @@
 {
-  "versao": "1.2.13",
+  "versao": "1.2.14",
   "data_lancamento": "2026-11-27",
-  "descricao": "Atualização automática: app.py, src/backup.py, src/config.py, src/database.py (+3)"
+  "descricao": "Atualização automática: src/erp.py"
 }

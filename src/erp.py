@@ -239,7 +239,12 @@ class ERPLancador:
     def _analisar_contas_a_pagar(self, numero_nota: str) -> Dict[str, Any]:
         """Lê e analisa a tela Lançamento Contas a Pagar (NF-e) [Cad_0160]."""
         time.sleep(2)
-        resultado_financeiro = {"sem_boleto": False, "divergencia": False, "diferenca": 0.0}
+        resultado_financeiro = {
+            "tela_financeira_aberta": False,
+            "sem_boleto": False,
+            "divergencia": False,
+            "diferenca": 0.0,
+        }
 
         texto_pagina = self.page.inner_text("body")
         indicadores_cad0160 = [
@@ -262,6 +267,8 @@ class ERPLancador:
 
         if not tela_financeira_aberta:
             return resultado_financeiro
+
+        resultado_financeiro["tela_financeira_aberta"] = True
 
         print(f"[ERP - Financeiro] Tela de Contas a Pagar detectada. Analisando valores da NF {numero_nota}...")
 
@@ -542,57 +549,65 @@ class ERPLancador:
                     break
                 time.sleep(0.5)
 
-            # 7. Tratar quadro interno (iframe)
+            # 7. Tratar quadro interno (iframe) - lê resumo antes e depois de Continuar [F2]
             if self.page.locator("iframe").count() > 0:
                 print("[ERP] Processando quadro interno (iframe)...")
                 try:
-                    frame = self.page.frame_locator("iframe").first
-                    btn_continuar = frame.get_by_role("button", name="Continuar [F2]")
-                    if btn_continuar.count() > 0:
-                        print("[ERP] Clicando em Continuar [F2] no iframe...")
-                        btn_continuar.click(timeout=10000)
-                        time.sleep(3)
+                    for idx_f in range(self.page.locator("iframe").count() - 1, -1, -1):
+                        frame = self.page.frame_locator("iframe").nth(idx_f)
+                        btn_continuar = frame.get_by_role("button", name="Continuar [F2]")
+                        if btn_continuar.count() > 0 and btn_continuar.first.is_visible():
+                            print("[ERP] Clicando em Continuar [F2] no iframe...")
+                            btn_continuar.first.click(timeout=10000)
+                            time.sleep(2)
+                            break
                 except Exception as err_frame:
                     print(f"[ERP] Aviso ao processar iframe: {err_frame}")
 
-            # 8. LEITURA E VALIDAÇÃO DA TELA DE RESUMO DE IMPORTAÇÃO
+            # 8. LEITURA E VALIDAÇÃO DA TELA DE RESUMO DE IMPORTAÇÃO (aguarda confirmação real ou rejeição)
             print("[ERP] Analisando tela de resumo de importação...")
-            time.sleep(2)
 
-            texto_tela = self.page.inner_text("body")
-            texto_iframe = ""
-            if self.page.locator("iframe").count() > 0:
-                try:
-                    frame = self.page.frame_locator("iframe").first
-                    if frame.locator("body").count() > 0:
-                        texto_iframe = frame.locator("body").inner_text(timeout=2000)
-                except Exception:
-                    pass
-
-            texto_completo = f"{texto_tela}\n{texto_iframe}".upper()
-
-            # 1. Verifica indicadores de sucesso explícito na tela de resumo (usando regex para tab/quebra de linha)
-            importacao_confirmada = bool(
-                re.search(r"NOTAS\s+IMPORTADAS\s*:?\s*[1-9]\d*\b", texto_completo)
-                or re.search(r"TOTAL\s+(?:DE\s+)?(?:NOTAS\s+)?IMPORTADAS\s*:?\s*[1-9]\d*\b", texto_completo)
-            )
-
-            # 2. Frases reais de erro (NÃO usar "IMPORTAÇÃO ABORTADA", pois ela aparece na legenda fixa da tela!)
             frases_erro_especificas = [
                 "NÃO PODE SER ENCONTRADO NO CADASTRO DE PRODUTOS",
                 "NAO PODE SER ENCONTRADO NO CADASTRO DE PRODUTOS",
                 "NÃO ENCONTRADO NO CADASTRO DE PRODUTOS",
                 "NAO ENCONTRADO NO CADASTRO DE PRODUTOS",
             ]
-
-            # Rejeição confirmada no resumo (0 importadas E >=1 não importadas)
-            resumo_rejeitou = bool(
-                re.search(r"NOTAS\s+N[ÃA]O\s+IMPORTADAS\s*:?\s*[1-9]\d*\b", texto_completo)
-                and re.search(r"NOTAS\s+IMPORTADAS\s*:?\s*0\b", texto_completo)
+            indicadores_cad0160 = (
+                "LANÇAMENTO CONTAS A PAGAR",
+                "LANCAMENTO CONTAS A PAGAR",
+                "CAD_0160]",
+                "TOTAL DUPLICATAS",
+                "COM CONTAS A PAGAR",
+                "SEM CONTAS A PAGAR",
             )
 
-            # Só classifica como produto sem cadastro se houver erro real E a importação não tiver sido confirmada
-            if (any(ind in texto_completo for ind in frases_erro_especificas) or resumo_rejeitou) and not importacao_confirmada:
+            texto_completo = ""
+            importacao_confirmada = False
+            cad0160_detectado = False
+            resumo_rejeitou = False
+            erro_produto_detectado = False
+
+            for tentativa_tela in range(10):
+                texto_completo = self._coletar_textos_tela_e_iframes().upper()
+                importacao_confirmada = bool(
+                    re.search(r"NOTAS\s+IMPORTADAS\s*:?\s*[1-9]\d*\b", texto_completo)
+                    or re.search(r"TOTAL\s+(?:DE\s+)?(?:NOTAS\s+)?IMPORTADAS\s*:?\s*[1-9]\d*\b", texto_completo)
+                )
+                cad0160_detectado = any(ind in texto_completo for ind in indicadores_cad0160)
+                resumo_rejeitou = bool(
+                    re.search(r"NOTAS\s+N[ÃA]O\s+IMPORTADAS\s*:?\s*[1-9]\d*\b", texto_completo)
+                    and re.search(r"NOTAS\s+IMPORTADAS\s*:?\s*0\b", texto_completo)
+                )
+                erro_produto_detectado = any(ind in texto_completo for ind in frases_erro_especificas)
+
+                if importacao_confirmada or cad0160_detectado or erro_produto_detectado or resumo_rejeitou:
+                    break
+                if tentativa_tela < 9:
+                    time.sleep(0.8)
+
+            # Produto sem cadastro confirmado
+            if (erro_produto_detectado or (resumo_rejeitou and "CADASTRO DE PRODUTOS" in texto_completo)) and not importacao_confirmada:
                 detalhe = "Produtos não encontrados no cadastro do ERP (Importação Abortada)"
                 match_obs = re.search(r"(NOTA \d+\s*:\s*O ITEM [^\n\r]+)", texto_completo)
                 if match_obs:
@@ -604,10 +619,62 @@ class ERPLancador:
                 self._fechar_iframe_ou_sair()
                 return self._marcar_produto_sem_cadastro(id_unico, numero_nota, origem_contato, detalhe)
 
+            # Outra rejeição explícita no resumo (Notas não importadas >= 1 e Notas importadas == 0 sem ser cadastro)
+            if resumo_rejeitou and not importacao_confirmada:
+                obs_match = re.search(r"OBSERVA[ÇC][ÕO]ES DA NOTA SELECIONADA\s*([\s\S]{1,220})", texto_completo)
+                motivo_resumo = (
+                    " ".join(obs_match.group(1).split())[:180]
+                    if obs_match
+                    else "Resumo de importação retornou Notas importadas = 0"
+                )
+                print(f"[ERP - Importação Recusada] {motivo_resumo}")
+                self._salvar_screenshot_erro(numero_nota)
+                self._fechar_iframe_ou_sair()
+                novo_status, tentativa_atual = registrar_falha_lancamento(
+                    id_unico, motivo_resumo, max_tentativas=3
+                )
+                if novo_status == "erro":
+                    registrar_outro_erro(numero_nota, origem_contato, motivo_resumo)
+                return {"status": novo_status, "mensagem": motivo_resumo}
+
             # 9. AUDITORIA FINANCEIRA DA TELA DE CONTAS A PAGAR (CAD_0160)
             res_financeiro = self._analisar_contas_a_pagar(numero_nota)
 
-            # 10. SAÍDA FINAL
+            # 10. PROVA OBRIGATÓRIA DE LANÇAMENTO (anti-falso-positivo)
+            confirmada_diretamente = (
+                importacao_confirmada
+                or cad0160_detectado
+                or res_financeiro.get("tela_financeira_aberta", False)
+            )
+            if not confirmada_diretamente:
+                print(
+                    f"[ERP - Verificação] Importação da NF {numero_nota} sem confirmação visual direta. "
+                    f"Validando status real no ERP..."
+                )
+                self._salvar_screenshot_erro(numero_nota)
+                esta_importada = self._confirmar_nota_importada_no_erp(numero_nota)
+                if esta_importada is not True:
+                    detalhe_dialog = f" | Alerta: {self.dialog_mensagem}" if self.dialog_mensagem else ""
+                    resumo_tela_curto = " ".join(texto_completo.split())[:160]
+                    motivo_nao_lanc = (
+                        f"NF {numero_nota} não foi confirmada como Importada no ERP"
+                        f"{detalhe_dialog}. Tela: {resumo_tela_curto}"
+                    )
+                    print(f"[ERP - Bloqueado Anti-Falso-Positivo] {motivo_nao_lanc}")
+                    novo_status, tentativa_atual = registrar_falha_lancamento(
+                        id_unico, motivo_nao_lanc, max_tentativas=3
+                    )
+                    if novo_status == "aguardando_retry":
+                        print(
+                            f"[ERP - Nova Tentativa {tentativa_atual}/3] NF {numero_nota} retida antes de concluir; "
+                            f"nova tentativa automática em ~30s."
+                        )
+                    else:
+                        print(f"[ERP - Erro Definitivo ({tentativa_atual}/3)] {motivo_nao_lanc}")
+                        registrar_outro_erro(numero_nota, origem_contato, motivo_nao_lanc)
+                    return {"status": novo_status, "mensagem": motivo_nao_lanc}
+
+            # 11. SAÍDA FINAL
             self._fechar_iframe_ou_sair()
 
             print(f"[ERP - Sucesso] Nota {numero_nota} lançada com sucesso!")
@@ -680,7 +747,8 @@ class ERPLancador:
         try:
             seletores_prioritarios = (
                 "button:has-text('Sair'), input[type='button'][value*='Sair'], "
-                "button:has-text('Fechar'), input[type='button'][value*='Fechar']"
+                "button:has-text('Fechar'), input[type='button'][value*='Fechar'], "
+                "button:has-text('Close'), button[aria-label='Close']"
             )
             seletores_secundarios = (
                 "button:has-text('Voltar'), input[type='button'][value*='Voltar'], "
@@ -745,6 +813,8 @@ class ERPLancador:
                     _clicar_visiveis_no_escopo(
                         self.page,
                         "div.modal_container button:has-text('Sair'), div.modal_container button:has-text('Fechar'), "
+                        "div.modal_container button:has-text('Close'), div.modal_container button[aria-label='Close'], "
+                        "div.modal_container button:has-text('×'), "
                         "div.modal_container input[value*='Sair'], div.modal_container input[value*='Fechar'], "
                         "div.modal_container .modal_close, div.modal_container a[title*='Fechar'], "
                         "div.modal_container span[title*='Fechar']",
@@ -823,6 +893,78 @@ class ERPLancador:
         except Exception:
             # Em caso de falha na leitura do DOM, não bloqueia o fluxo normal
             return True
+
+    def _coletar_textos_tela_e_iframes(self) -> str:
+        """Agrega texto visível do body principal, todos os iframes abertos e último alerta nativo."""
+        partes = []
+        try:
+            partes.append(self.page.inner_text("body"))
+        except Exception:
+            pass
+        try:
+            total_iframes = self.page.locator("iframe").count()
+            for idx_f in range(total_iframes):
+                try:
+                    frame = self.page.frame_locator("iframe").nth(idx_f)
+                    if frame.locator("body").count() > 0:
+                        partes.append(frame.locator("body").inner_text(timeout=1500))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        if self.dialog_mensagem:
+            partes.append(f"ALERTA_DIALOG: {self.dialog_mensagem}")
+        return "\n".join(partes)
+
+    def _confirmar_nota_importada_no_erp(self, numero_nota: str) -> Optional[bool]:
+        """
+        Verifica diretamente na grade do ERP se a NF realmente mudou para 'Importadas'.
+        Retorna True se estiver em Importadas, False se continuar em Não Importadas, ou None se incerto.
+        """
+        try:
+            self._fechar_iframe_ou_sair()
+            if self.page.locator("div.modal_container, iframe").count() > 0:
+                self.page.reload(wait_until="load", timeout=30000)
+                time.sleep(1.5)
+                self.verificar_ou_recuperar_sessao()
+
+            self._limpar_filtros_tela()
+            campo_nota = self._obter_campo_nota()
+            if campo_nota.count() == 0 or not campo_nota.first.is_visible():
+                filtros = self.page.get_by_text("Filtros Avançados")
+                if filtros.count() > 0:
+                    filtros.first.click()
+                    time.sleep(0.5)
+                campo_nota = self._obter_campo_nota()
+
+            num_str = str(numero_nota).strip()
+            if campo_nota.count() > 0:
+                campo_nota.first.click()
+                campo_nota.first.fill(num_str)
+                campo_nota.first.press("Enter")
+                time.sleep(1.0)
+
+            self._selecionar_filtro("Importadas")
+            self.page.get_by_role("button", name="Consultar [F3]").first.click()
+            time.sleep(1.8)
+            em_importadas = self.page.get_by_role("button", name="Submit").count() > 0
+            if em_importadas:
+                self._limpar_filtros_tela()
+                self._selecionar_filtro("Não Importadas")
+                return True
+
+            self._selecionar_filtro("Não Importadas")
+            self.page.get_by_role("button", name="Consultar [F3]").first.click()
+            time.sleep(1.8)
+            em_nao_importadas = self.page.get_by_role("button", name="Submit").count() > 0
+            self._limpar_filtros_tela()
+
+            if em_nao_importadas:
+                return False
+            return None
+        except Exception as err_ver:
+            print(f"[ERP - Aviso] Falha ao reconsultar status real da NF {numero_nota}: {err_ver}")
+            return None
 
     def _salvar_screenshot_erro(self, numero_nota: str, max_prints: int = 50) -> None:
         """Captura screenshot da tela do ERP no erro definitivo para facilitar diagnóstico."""
